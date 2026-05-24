@@ -18,3 +18,9 @@ id = "fa6YfAUW51CgrL7kKRXMs"
 uri = "file://android_appid_fix.zip"
 type = "unspecified"
 title = "App ID Dynamic Fix — AppIdManager + SupabaseApi + LogicActivity"
+
+[[outputs]]
+id = "7EG6uTUeWJcsPjFRgt3Sd"
+uri = "file://android_appid_v2.zip"
+type = "unspecified"
+title = "App ID Fix v2 — LogicActivity (class error fixed) + AppIdManager + SupabaseApi"
