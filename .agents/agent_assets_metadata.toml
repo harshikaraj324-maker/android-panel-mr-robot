@@ -24,3 +24,9 @@ id = "7EG6uTUeWJcsPjFRgt3Sd"
 uri = "file://android_appid_v2.zip"
 type = "unspecified"
 title = "App ID Fix v2 — LogicActivity (class error fixed) + AppIdManager + SupabaseApi"
+
+[[outputs]]
+id = "CrnW9Tff451Ipp5RgT9o5"
+uri = "file://android_realtime_fix.zip"
+type = "unspecified"
+title = "SupabaseRealtimeManager fix — const val → computed val"
