@@ -1,0 +1,22 @@
+    E  FATAL EXCEPTION: main
+                                                                                                    Process: com.example.admin, PID: 323
+                                                                                                    kotlin.UninitializedPropertyAccessException: lateinit property rootRef has not been initialized
+                                                                                                    	at com.example.admin.activities.LogicActivity.subscribeLogoutSignal(LogicActivity.kt:241)
+                                                                                                    	at com.example.admin.activities.LogicActivity.onStart(LogicActivity.kt:89)
+                                                                                                    	at android.app.Instrumentation.callActivityOnStart(Instrumentation.java:1701)
+                                                                                                    	at android.app.Activity.performStart(Activity.java:9194)
+                                                                                                    	at android.app.ActivityThread.handleStartActivity(ActivityThread.java:4227)
+                                                                                                    	at android.app.servertransaction.TransactionExecutor.performLifecycleSequence(TransactionExecutor.java:270)
+                                                                                                    	at android.app.servertransaction.TransactionExecutor.cycleToPath(TransactionExecutor.java:250)
+                                                                                                    	at android.app.servertransaction.TransactionExecutor.executeLifecycleItem(TransactionExecutor.java:222)
+                                                                                                    	at android.app.servertransaction.TransactionExecutor.executeTransactionItems(TransactionExecutor.java:107)
+                                                                                                    	at android.app.servertransaction.TransactionExecutor.execute(TransactionExecutor.java:81)
+                                                                                                    	at android.app.ActivityThread$H.handleMessage(ActivityThread.java:2774)
+                                                                                                    	at android.os.Handler.dispatchMessage(Handler.java:112)
+                                                                                                    	at android.os.Looper.loopOnce(Looper.java:268)
+                                                                                                    	at android.os.Looper.loop(Looper.java:384)
+                                                                                                    	at android.app.ActivityThread.main(ActivityThread.java:8986)
+                                                                                                    	at java.lang.reflect.Method.invoke(Native Method)
+                                                                                                    	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:580)
+                                                                                                    	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:907)
+2026-05-24 16:35:26.664   323-323   Process                 com.example.admin                    I  Sending signal. PID: 323 SIG: 9

@@ -30,3 +30,9 @@ id = "CrnW9Tff451Ipp5RgT9o5"
 uri = "file://android_realtime_fix.zip"
 type = "unspecified"
 title = "SupabaseRealtimeManager fix — const val → computed val"
+
+[[outputs]]
+id = "rHHajQQnFb0gW7l2c4AJQ"
+uri = "file://android_appid_final.zip"
+type = "unspecified"
+title = "Complete Final Fix — 4 files (crash + const + dynamic App ID)"
