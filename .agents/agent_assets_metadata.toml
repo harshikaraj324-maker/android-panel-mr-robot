@@ -12,3 +12,9 @@ id = "Cv5U66fYYa1r_lNlgeU50"
 uri = "file://android_fix_v2.zip"
 type = "unspecified"
 title = "Fixed Files v2 — DeviceActivity + DeviceAdapter"
+
+[[outputs]]
+id = "fa6YfAUW51CgrL7kKRXMs"
+uri = "file://android_appid_fix.zip"
+type = "unspecified"
+title = "App ID Dynamic Fix — AppIdManager + SupabaseApi + LogicActivity"
