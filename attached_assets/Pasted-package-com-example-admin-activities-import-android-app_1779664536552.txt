@@ -1,0 +1,336 @@
+package com.example.admin.activities
+
+import android.app.AlertDialog
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.ImageView
+import android.widget.TextView
+import android.widget.Toast
+import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.RecyclerView
+import com.example.admin.R
+import com.example.admin.models.BatteryData
+import com.example.admin.models.DeviceData
+import com.example.admin.network.SupabaseApi
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class DeviceAdapter(
+    private val deviceDataMap: Map<String, DeviceData>,
+    devices: List<String>,
+    private val heartbeatMap: Map<String, SupabaseApi.DeviceStatus>,
+    private val batteryMap: Map<String, BatteryData>,
+    private val starMap: MutableMap<String, Boolean>,
+    private var last15MinDevices: Set<String>,
+    private val onItemClick: (String) -> Unit,
+    private val onDeleteClick: (String) -> Unit,
+    private val onForceClick: (String) -> Unit,
+    private val onLongPressClick: (String) -> Unit,
+    private val onStarClick: (String, Int, Boolean) -> Unit
+) : RecyclerView.Adapter<DeviceAdapter.DeviceViewHolder>() {
+
+    private val dateFormat = SimpleDateFormat("dd/MM/yyyy | hh:mm a", Locale.getDefault())
+    private val devicesFiltered: MutableList<String> = mutableListOf()
+
+    private var processingDevices: Set<String> = emptySet()
+    private var checkSecondsMap: Map<String, Int> = emptyMap()
+    private var checkResultMap: Map<String, String> = emptyMap()
+
+    init {
+        updateDevices(devices)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DeviceViewHolder {
+        val view = LayoutInflater.from(parent.context)
+            .inflate(R.layout.item_device, parent, false)
+        return DeviceViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: DeviceViewHolder, position: Int) {
+        val uid: String = devicesFiltered[position].trim()
+        val d: DeviceData? = deviceDataMap[uid]
+        val b: BatteryData? = batteryMap[uid]
+        val heartbeat = heartbeatMap[uid]
+
+        holder.serialText.text = (devicesFiltered.size - position).toString()
+
+        val model = d?.model.orEmpty()
+        val manufacturer = d?.manufacturer.orEmpty()
+        val brand = d?.brand.orEmpty()
+        val androidVersion = d?.androidVersion.orEmpty()
+        val sim1Number = d?.sim1Number.orEmpty()
+        val sim2Number = d?.sim2Number.orEmpty()
+        val joinedAt = d?.joinedAt ?: 0L
+
+        val checkResult = checkResultMap[uid].orEmpty()
+        val processingSecond = (checkSecondsMap[uid] ?: 0).coerceIn(0, 15)
+
+        val isProcessing = processingDevices.contains(uid)
+        val isOnlineByTimestamp = last15MinDevices.contains(uid)
+
+        val cardStatus = when {
+            isProcessing -> CardStatus.PROCESSING
+
+            checkResult == "OFFLINE" ||
+                    checkResult == "NO_TOKEN" ||
+                    checkResult == "FCM_FAILED" -> CardStatus.OFFLINE
+
+            // IMPORTANT:
+            // Do not keep card green only because old checkResultMap has "ONLINE".
+            // Card should be green only while data_json.heartbeat.checked_at is fresh
+            // and exists inside last15MinDevices.
+            isOnlineByTimestamp -> CardStatus.ONLINE
+
+            else -> CardStatus.OFFLINE
+        }
+
+        val displayModelText = when (cardStatus) {
+            CardStatus.PROCESSING -> {
+                val name = if (model.isNotBlank()) model else "Unknown"
+                "PROCESSING ${processingSecond}/15s | $name"
+            }
+
+            CardStatus.ONLINE,
+            CardStatus.OFFLINE -> {
+                if (model.isNotBlank()) model else "Unknown"
+            }
+        }
+
+        holder.deviceModel.text = displayModelText
+
+        holder.deviceModel.setTextColor(
+            when (cardStatus) {
+                CardStatus.PROCESSING -> Color.parseColor("#FF9800")
+                CardStatus.ONLINE,
+                CardStatus.OFFLINE -> Color.parseColor("#212121")
+            }
+        )
+
+        holder.joinedAt.text = if (joinedAt > 0L) {
+            try {
+                "Joined: ${dateFormat.format(Date(joinedAt))}"
+            } catch (e: Exception) {
+                "Joined: --"
+            }
+        } else {
+            "Joined: --"
+        }
+
+        val simNumber: String = when {
+            sim1Number.isNotBlank() -> sim1Number
+            sim2Number.isNotBlank() -> sim2Number
+            else -> ""
+        }
+
+        holder.phoneNumber.text = if (simNumber.isNotBlank()) simNumber else "No Number"
+
+        val showGreenDot = cardStatus == CardStatus.ONLINE
+
+        holder.greenPoint.visibility = if (showGreenDot) View.VISIBLE else View.GONE
+        if (showGreenDot) {
+            holder.greenPoint.setImageResource(R.drawable.dot)
+            holder.greenPoint.setColorFilter(
+                ContextCompat.getColor(holder.itemView.context, R.color.green)
+            )
+        }
+
+        setCardBackground(holder, cardStatus)
+
+        val fav: Boolean = starMap[uid] ?: false
+        holder.star.setImageResource(if (fav) R.drawable.favoriate else R.drawable.normal)
+
+        holder.star.setOnClickListener {
+            val newFav = !fav
+            onStarClick(uid, position, newFav)
+
+            Toast.makeText(
+                holder.itemView.context,
+                if (newFav) "Added to favorites" else "Removed from favorites",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+
+        holder.itemView.setOnClickListener {
+            onItemClick(uid)
+        }
+
+        holder.deleteIcon.setOnClickListener {
+            onDeleteClick(uid)
+        }
+
+        holder.forceButton?.setOnClickListener {
+            onForceClick(uid)
+        }
+
+        holder.forceButton?.text = when {
+            cardStatus == CardStatus.PROCESSING -> "Processing"
+            checkResult == "NO_TOKEN" -> "No Token"
+            checkResult == "FCM_FAILED" -> "Retry"
+            else -> "Check"
+        }
+
+        holder.forceButton?.isEnabled = cardStatus != CardStatus.PROCESSING
+
+        holder.itemView.setOnLongClickListener {
+            onLongPressClick(uid)
+            Toast.makeText(holder.itemView.context, "UID: $uid", Toast.LENGTH_SHORT).show()
+            true
+        }
+
+        holder.infoIcon.setOnClickListener {
+            val ctx = holder.itemView.context
+            val details = StringBuilder()
+
+            details.appendLine("=================================")
+            details.appendLine("DEVICE INFORMATION")
+            details.appendLine("=================================")
+            details.appendLine("UID: $uid")
+
+            val lastSeenText = if (heartbeat != null && heartbeat.checkedAt > 0L) {
+                try {
+                    dateFormat.format(Date(heartbeat.checkedAt))
+                } catch (e: Exception) {
+                    "Unknown"
+                }
+            } else {
+                "No data"
+            }
+
+            details.appendLine("Last Seen: $lastSeenText")
+
+            if (isProcessing) {
+                details.appendLine("Check State: Processing ${processingSecond}/15s")
+            } else if (checkResult.isNotBlank()) {
+                details.appendLine("Check State: $checkResult")
+            }
+
+            details.appendLine("\nDevice Details:")
+            if (model.isNotBlank()) details.appendLine("  Model: $model")
+            if (manufacturer.isNotBlank()) details.appendLine("  Manufacturer: $manufacturer")
+            if (brand.isNotBlank()) details.appendLine("  Brand: $brand")
+            if (androidVersion.isNotBlank()) details.appendLine("  Android: $androidVersion")
+            if (joinedAt > 0L) details.appendLine("  Joined: ${dateFormat.format(Date(joinedAt))}")
+
+            details.appendLine("\nSIM Information:")
+            if (sim1Number.isNotBlank()) {
+                details.appendLine("  SIM 1: $sim1Number")
+            }
+            if (sim2Number.isNotBlank()) {
+                details.appendLine("  SIM 2: $sim2Number")
+            }
+            if (sim1Number.isBlank() && sim2Number.isBlank()) {
+                details.appendLine("  No SIM detected")
+            }
+
+            b?.let { battery ->
+                details.appendLine("\nBATTERY INFORMATION")
+                details.appendLine("=================================")
+                details.appendLine("  Level: ${battery.level}%")
+                details.appendLine("  Charging: ${if (battery.isCharging) "Yes" else "No"}")
+                if (battery.temperature > 0) details.appendLine("  Temperature: ${battery.temperature}C")
+                if (battery.voltage > 0) details.appendLine("  Voltage: ${battery.voltage}mV")
+                if (battery.health.isNotBlank()) details.appendLine("  Health: ${battery.health}")
+            }
+
+            AlertDialog.Builder(ctx)
+                .setTitle("Device Details")
+                .setMessage(details.toString())
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Copy UID") { _, _ ->
+                    val clipboard =
+                        ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("Device UID", uid)
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(ctx, "UID copied", Toast.LENGTH_SHORT).show()
+                }
+                .show()
+        }
+    }
+
+    override fun getItemCount(): Int = devicesFiltered.size
+
+    fun updateDevices(newList: List<String>) {
+        devicesFiltered.clear()
+        devicesFiltered.addAll(
+            newList.sortedByDescending { uid: String ->
+                deviceDataMap[uid]?.joinedAt ?: 0L
+            }
+        )
+        notifyDataSetChanged()
+    }
+
+    fun updateLast15MinDevices(newSet: Set<String>) {
+        last15MinDevices = newSet
+        notifyDataSetChanged()
+    }
+
+    fun updateOnlineCheckStates(
+        processingDevices: Set<String>,
+        checkSecondsMap: Map<String, Int>,
+        checkResultMap: Map<String, String>
+    ) {
+        this.processingDevices = processingDevices
+        this.checkSecondsMap = checkSecondsMap
+        this.checkResultMap = checkResultMap
+        notifyDataSetChanged()
+    }
+
+    private fun setCardBackground(holder: DeviceViewHolder, status: CardStatus) {
+        val backgroundDrawable =
+            ContextCompat.getDrawable(holder.itemView.context, R.drawable.card_background)
+                ?.mutate() as? GradientDrawable
+
+        val backgroundColor = when (status) {
+            CardStatus.ONLINE ->
+                ContextCompat.getColor(holder.itemView.context, R.color.successLightColor)
+
+            CardStatus.PROCESSING ->
+                Color.parseColor("#FFF3CD")
+
+            CardStatus.OFFLINE ->
+                Color.WHITE
+        }
+
+        val strokeColor = when (status) {
+            CardStatus.PROCESSING ->
+                Color.parseColor("#FF9800")
+
+            CardStatus.ONLINE,
+            CardStatus.OFFLINE ->
+                ContextCompat.getColor(holder.itemView.context, R.color.border_color)
+        }
+
+        backgroundDrawable?.let { drawable ->
+            drawable.setColor(backgroundColor)
+            drawable.setStroke(2, strokeColor)
+            holder.itemView.background = drawable
+        } ?: run {
+            holder.itemView.setBackgroundColor(backgroundColor)
+        }
+    }
+
+    private enum class CardStatus {
+        PROCESSING,
+        ONLINE,
+        OFFLINE
+    }
+
+    inner class DeviceViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val serialText: TextView = view.findViewById(R.id.serialText)
+        val deviceModel: TextView = view.findViewById(R.id.deviceModel)
+        val joinedAt: TextView = view.findViewById(R.id.joinedAt)
+        val deleteIcon: ImageView = view.findViewById(R.id.deleteIcon)
+        val phoneNumber: TextView = view.findViewById(R.id.phoneNumber)
+        val infoIcon: ImageView = view.findViewById(R.id.infoIcon)
+        val deviceImage: ImageView = view.findViewById(R.id.deviceImage)
+        val star: ImageView = view.findViewById(R.id.star)
+        val greenPoint: ImageView = view.findViewById(R.id.greenPoint)
+        val forceButton: Button? = view.findViewById(R.id.checkOnlineText)
+    }
+}

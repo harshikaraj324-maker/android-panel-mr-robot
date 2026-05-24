@@ -1,0 +1,1452 @@
+package com.example.admin.activities
+
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.PorterDuff
+import android.net.TrafficStats
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.text.format.Formatter
+import android.util.Log
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.widget.*
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.example.admin.R
+import com.example.admin.core.ExpiryManager
+import com.example.admin.core.SessionManager
+import com.example.admin.models.BatteryData
+import com.example.admin.models.DeviceData
+import com.example.admin.network.SupabaseApi
+import com.example.admin.network.SupabaseRealtimeManager
+import com.example.admin.utils.FCMHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.util.Locale
+
+class DeviceActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "DeviceActivity"
+
+        private const val FIFTEEN_MINUTES_MS = 15 * 60 * 1000L
+        private const val CHECK_RESPONSE_TIMEOUT_MS = 15 * 1000L
+        private const val CHECK_POLL_INTERVAL_MS = 1000L
+
+        // This is local UI recompute only. It does NOT call Supabase.
+        private const val LIVE_UI_TICK_MS = 1000L
+
+        private const val BATCH_SIZE = 5
+        private const val BATCH_DELAY_MS = 1000L
+
+        // Admin number broadcast FCM throttling. Prevents all devices from receiving FCM at once on weak networks.
+        private const val ADMIN_FCM_BATCH_SIZE = 5
+        private const val ADMIN_FCM_BATCH_DELAY_MS = 1500L
+    }
+
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var deviceAdapter: DeviceAdapter
+    private lateinit var progressBar: ProgressBar
+    private lateinit var progressBarContainer: FrameLayout
+
+    private lateinit var sentText: TextView
+    private lateinit var receivedText: TextView
+    private lateinit var totalCount: TextView
+    private lateinit var last15MinSeen: TextView
+    private lateinit var allMessagesTextView: TextView
+    private lateinit var updateNoTextView: TextView
+    private lateinit var checkOnlineText: TextView
+    private lateinit var searchInput: EditText
+
+    private lateinit var updateNumberOverlay: View
+    private lateinit var inputNumber: EditText
+    private lateinit var confirmUpdateBtn: Button
+    private lateinit var eraseBtn: Button
+
+    private val deviceDataMap = mutableMapOf<String, DeviceData>()
+    private val deviceIdList = mutableListOf<String>()
+    private val heartbeatMap = mutableMapOf<String, SupabaseApi.DeviceStatus>()
+    private val batteryMap = mutableMapOf<String, BatteryData>()
+    private val starMap = mutableMapOf<String, Boolean>()
+    private val last15MinDevices = mutableSetOf<String>()
+
+    private val processingDevices = mutableSetOf<String>()
+    private val forcedOfflineDevices = mutableSetOf<String>()
+    private val checkSecondsMap = mutableMapOf<String, Int>()
+    private val checkResultMap = mutableMapOf<String, String>()
+    private val checkStartedAtMap = mutableMapOf<String, Long>()
+    private val oldOnlineCheckedAtMap = mutableMapOf<String, Long>()
+
+    private lateinit var supabaseApi: SupabaseApi
+    private lateinit var realtimeManager: SupabaseRealtimeManager
+
+    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val expiry = ExpiryManager()
+
+    private var selectedUid: String? = null
+    private var adminNumberCached: String? = null
+    private var adminStatusCached: String? = "OFF"
+
+    private var isBulkCheckInProgress = false
+    private val pendingFcmDevices = mutableListOf<String>()
+
+    private var bulkTotalCount = 0
+    private var bulkFcmSentCount = 0
+    private var bulkOnlineCount = 0
+    private var bulkOfflineCount = 0
+    private var bulkFailedCount = 0
+    private var bulkNoTokenCount = 0
+
+    private var isRedirecting = false
+    private var isFirstLoad = true
+
+    private var lastTxBytes = 0L
+    private var lastRxBytes = 0L
+    private val appUid = android.os.Process.myUid()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val bulkCheckHandler = Handler(Looper.getMainLooper())
+    private val adminFcmHandler = Handler(Looper.getMainLooper())
+
+    private enum class FilterState {
+        ALL,
+        LAST_15_MIN,
+        SEARCH
+    }
+
+    private var currentFilter = FilterState.ALL
+    private var searchQuery = ""
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        if (!SessionManager.isLoggedIn(this)) {
+            redirectToLogin()
+            return
+        }
+
+        setContentView(R.layout.activitty_device)
+
+        initSupabase()
+        bindViews()
+        setupToolbar()
+        setupRecyclerView()
+        setupProgressBar()
+        setupOverlay()
+        setupAdapter()
+
+        showLoading()
+
+        lastTxBytes = safeTxBytes()
+        lastRxBytes = safeRxBytes()
+
+        FCMHelper.initialize(this)
+
+        // One-time initial data fetch only.
+        // After this, table updates come from Supabase Realtime WebSocket.
+        refreshDataDirect()
+        startRealtime()
+
+        mainHandler.post(networkSpeedRunnable)
+        mainHandler.post(liveUiRunnable)
+
+        loadAdminNumberFromSupabase()
+    }
+
+    override fun onStart() {
+        super.onStart()
+
+        if (!SessionManager.isLoggedIn(this)) {
+            redirectToLogin()
+            return
+        }
+
+        expiry.ensureWindow2MinutesIfMissing {}
+
+        expiry.startRuntimeGuards {
+            if (!isActivityAlive()) return@startRuntimeGuards
+            SessionManager.forceLogoutAndGoTo(this@DeviceActivity, LogicActivity::class.java)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+
+        if (!SessionManager.isLoggedIn(this)) {
+            redirectToLogin()
+            return
+        }
+
+        // One-time sync when screen comes back, not a loop.
+        refreshDataDirect()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        cleanupBulkCheck()
+
+        if (::realtimeManager.isInitialized) {
+            realtimeManager.stop()
+        }
+
+        coroutineScope.cancel()
+        mainHandler.removeCallbacksAndMessages(null)
+        bulkCheckHandler.removeCallbacksAndMessages(null)
+        adminFcmHandler.removeCallbacksAndMessages(null)
+        expiry.shutdown()
+    }
+
+    override fun onBackPressed() {
+        startActivity(Intent(this, LogicActivity::class.java))
+        finish()
+    }
+
+    private fun initSupabase() {
+        supabaseApi = SupabaseApi()
+        realtimeManager = SupabaseRealtimeManager()
+    }
+
+    private fun startRealtime() {
+        realtimeManager.startRegisteredDevicesRealtime(
+            scope = coroutineScope,
+            onInsertOrUpdate = { row ->
+                runOnUiThread {
+                    handleRealtimeUpsert(row)
+                }
+            },
+            onDelete = { row ->
+                runOnUiThread {
+                    handleRealtimeDelete(row)
+                }
+            },
+            onError = { error ->
+                Log.e(TAG, "Realtime error: ${error.message}", error)
+                // No polling fallback here because user requested no loop fetch.
+            }
+        )
+    }
+
+    private fun handleRealtimeUpsert(row: JSONObject) {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        if (uid.isBlank()) return
+
+        val dataType = row.optString("data_type", "").trim()
+        if (!supabaseApi.isRealDeviceRow(uid, dataType)) {
+            return
+        }
+
+        supabaseApi.parseRegisteredDeviceRow(row)?.let { device ->
+            if (!deviceIdList.contains(device.uid)) {
+                deviceIdList.add(device.uid)
+            }
+
+            deviceDataMap[device.uid] = DeviceData(
+                model = device.model.orEmpty(),
+                manufacturer = device.manufacturer.orEmpty(),
+                androidVersion = device.androidVersion.orEmpty(),
+                brand = device.brand.orEmpty(),
+                fcmToken = device.fcmToken.orEmpty(),
+                sim1Number = device.sim1Number.orEmpty(),
+                sim2Number = device.sim2Number.orEmpty(),
+                joinedAt = device.joinedAt
+            )
+        }
+
+        supabaseApi.parseDeviceStatusRow(row)?.let { status ->
+            heartbeatMap[status.uid] = status
+        }
+
+        supabaseApi.parseBatteryRow(row)?.let { battery ->
+            batteryMap[battery.uid] = BatteryData(
+                level = battery.level,
+                isCharging = battery.isCharging,
+                temperature = battery.temperature.toFloat(),
+                voltage = battery.voltage,
+                health = battery.health.orEmpty(),
+                timestamp = battery.timestamp
+            )
+        }
+
+        supabaseApi.parseStarredRow(row)?.let { starred ->
+            starMap[starred.first] = starred.second
+        }
+
+        deviceIdList.sortByDescending { id ->
+            deviceDataMap[id]?.joinedAt ?: 0L
+        }
+
+        recomputeOnlineOnly()
+        applyFilter()
+        // NOTE: notifyAdapterCheckStates() and updateToolbarCounts() already called inside applyFilter()
+    }
+
+    private fun handleRealtimeDelete(row: JSONObject) {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        if (uid.isBlank()) return
+
+        deviceIdList.remove(uid)
+        deviceDataMap.remove(uid)
+        heartbeatMap.remove(uid)
+        batteryMap.remove(uid)
+        starMap.remove(uid)
+        last15MinDevices.remove(uid)
+        processingDevices.remove(uid)
+        forcedOfflineDevices.remove(uid)
+        checkSecondsMap.remove(uid)
+        checkResultMap.remove(uid)
+        checkStartedAtMap.remove(uid)
+        oldOnlineCheckedAtMap.remove(uid)
+
+        recomputeOnlineOnly()
+        applyFilter()
+        // NOTE: notifyAdapterCheckStates() and updateToolbarCounts() already called inside applyFilter()
+    }
+
+    private fun bindViews() {
+        sentText = findViewById(R.id.sentText)
+        receivedText = findViewById(R.id.receivedText)
+        totalCount = findViewById(R.id.totalCount)
+        last15MinSeen = findViewById(R.id.last15MinSeen)
+        allMessagesTextView = findViewById(R.id.allMessagesTextView)
+        updateNoTextView = findViewById(R.id.updateNoTextView)
+        checkOnlineText = findViewById(R.id.checkOnlineText)
+        searchInput = findViewById(R.id.searchInput)
+        recyclerView = findViewById(R.id.recyclerView)
+
+        updateNumberOverlay = findViewById(R.id.updateNumberOverlay)
+        inputNumber = updateNumberOverlay.findViewById(R.id.inputNumber)
+        confirmUpdateBtn = updateNumberOverlay.findViewById(R.id.confirmUpdateBtn)
+        eraseBtn = updateNumberOverlay.findViewById(R.id.eraseBtn)
+    }
+
+    private fun setupToolbar() {
+        allMessagesTextView.setOnClickListener {
+            startActivity(Intent(this, SMSActivity::class.java))
+        }
+
+        updateNoTextView.setOnClickListener {
+            showOverlayForGlobal()
+        }
+
+        totalCount.setOnClickListener {
+            currentFilter = FilterState.ALL
+            searchQuery = ""
+            searchInput.text.clear()
+            applyFilter()
+        }
+
+        last15MinSeen.setOnClickListener {
+            currentFilter = FilterState.LAST_15_MIN
+            searchQuery = ""
+            searchInput.text.clear()
+            applyFilter()
+        }
+
+        checkOnlineText.setOnClickListener {
+            showCheckOnlineOkCancelDialog()
+        }
+
+        checkOnlineText.setOnLongClickListener {
+            showCheckOnlineOkCancelDialog()
+            true
+        }
+
+        setupSearch()
+    }
+
+    private fun showCheckOnlineOkCancelDialog() {
+        if (isBulkCheckInProgress) {
+            showCancelBulkDialog()
+            return
+        }
+
+        val totalDevices = deviceIdList.size
+
+        if (totalDevices == 0) {
+            Toast.makeText(this, "No devices found", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Check Online")
+            .setMessage(
+                "Send FCM online check to all $totalDevices devices in batches?\n\n" +
+                        "No loop fetch will run. Realtime will receive data_json.heartbeat.checked_at update."
+            )
+            .setPositiveButton("OK") { dialog, _ ->
+                dialog.dismiss()
+                startBulkCheckWithCardProcessing()
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun showCancelBulkDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("Bulk Check Running")
+            .setMessage(
+                "Total: $bulkTotalCount\n" +
+                        "FCM Sent: $bulkFcmSentCount\n" +
+                        "Online: $bulkOnlineCount\n" +
+                        "Offline: $bulkOfflineCount\n" +
+                        "FCM Failed: $bulkFailedCount\n" +
+                        "No Token: $bulkNoTokenCount\n\n" +
+                        "Do you want to cancel?"
+            )
+            .setPositiveButton("OK") { dialog, _ ->
+                dialog.dismiss()
+                cleanupBulkCheck()
+                updateToolbarCounts()
+                notifyAdapterCheckStates()
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun setupSearch() {
+        searchInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(
+                s: CharSequence?,
+                start: Int,
+                count: Int,
+                after: Int
+            ) = Unit
+
+            override fun afterTextChanged(s: Editable?) = Unit
+
+            override fun onTextChanged(
+                s: CharSequence?,
+                start: Int,
+                before: Int,
+                count: Int
+            ) {
+                searchQuery = s?.toString()?.trim().orEmpty()
+
+                currentFilter = if (searchQuery.isNotEmpty()) {
+                    FilterState.SEARCH
+                } else {
+                    FilterState.ALL
+                }
+
+                applyFilter()
+            }
+        })
+    }
+
+    private fun setupRecyclerView() {
+        recyclerView.layoutManager = LinearLayoutManager(this)
+    }
+
+    private fun setupProgressBar() {
+        val root = window.decorView.findViewById<ViewGroup>(android.R.id.content)
+
+        progressBarContainer = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            visibility = View.GONE
+        }
+
+        progressBar = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateDrawable.setColorFilter(Color.BLUE, PorterDuff.Mode.SRC_IN)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        }
+
+        progressBarContainer.addView(progressBar)
+        root.addView(progressBarContainer)
+    }
+
+    private fun setupAdapter() {
+        deviceAdapter = DeviceAdapter(
+            deviceDataMap = deviceDataMap,
+            devices = deviceIdList,
+            heartbeatMap = heartbeatMap,
+            batteryMap = batteryMap,
+            starMap = starMap,
+            last15MinDevices = last15MinDevices.toSet(),
+
+            onItemClick = { uid ->
+                startActivity(
+                    Intent(this, FinalActivity::class.java)
+                        .putExtra("uniqueid", uid)
+                )
+            },
+
+            onDeleteClick = { uid ->
+                deleteDevice(uid)
+            },
+
+            onForceClick = { uid ->
+                selectedUid = uid
+                checkSingleDevice(uid)
+            },
+
+            onLongPressClick = { uid ->
+                Toast.makeText(this, "Long pressed: $uid", Toast.LENGTH_SHORT).show()
+            },
+
+            onStarClick = { uid, position, starred ->
+                toggleStar(uid, position, starred)
+            }
+        )
+
+        recyclerView.adapter = deviceAdapter
+        notifyAdapterCheckStates()
+    }
+
+    private fun setupOverlay() {
+        updateNumberOverlay.setOnTouchListener { _, event ->
+            if (event.action == MotionEvent.ACTION_DOWN) {
+                val x = event.x.toInt()
+                val y = event.y.toInt()
+                val overlayContent = inputNumber.parent as View
+
+                val clickedOutside =
+                    x < overlayContent.left ||
+                            x > overlayContent.right ||
+                            y < overlayContent.top ||
+                            y > overlayContent.bottom
+
+                if (clickedOutside) {
+                    updateNumberOverlay.visibility = View.GONE
+                    return@setOnTouchListener true
+                }
+            }
+
+            false
+        }
+    }
+
+    private fun refreshDataDirect() {
+        if (!isActivityAlive()) return
+
+        coroutineScope.launch {
+            refreshDataDirectNow()
+        }
+    }
+
+    // One-time initial/resume sync only. This is not called by any timer.
+    private suspend fun refreshDataDirectNow() {
+        if (!isActivityAlive()) return
+
+        val devices = withContext(Dispatchers.IO) {
+            supabaseApi.getAllDevices().getOrNull() ?: emptyList()
+        }
+
+        val statuses = withContext(Dispatchers.IO) {
+            supabaseApi.getLatestDeviceStatuses().getOrNull() ?: emptyMap()
+        }
+
+        val batteries = withContext(Dispatchers.IO) {
+            supabaseApi.getAllBatteryData().getOrNull() ?: emptyList()
+        }
+
+        val starredDevices = withContext(Dispatchers.IO) {
+            supabaseApi.getStarredDevices().getOrNull() ?: emptyMap()
+        }
+
+        val batteryByUid = batteries.associateBy { it.uid }
+
+        deviceDataMap.clear()
+        deviceIdList.clear()
+        heartbeatMap.clear()
+        batteryMap.clear()
+        starMap.clear()
+
+        devices.forEach { device ->
+            val uid = device.uid.trim()
+            if (uid.isBlank()) return@forEach
+
+            deviceIdList.add(uid)
+
+            deviceDataMap[uid] = DeviceData(
+                model = device.model.orEmpty(),
+                manufacturer = device.manufacturer.orEmpty(),
+                androidVersion = device.androidVersion.orEmpty(),
+                brand = device.brand.orEmpty(),
+                fcmToken = device.fcmToken.orEmpty(),
+                sim1Number = device.sim1Number.orEmpty(),
+                sim2Number = device.sim2Number.orEmpty(),
+                joinedAt = device.joinedAt
+            )
+
+            val status = statuses[uid]
+            if (status != null) {
+                heartbeatMap[uid] = status
+            }
+
+            val battery = batteryByUid[uid]
+            if (battery != null) {
+                batteryMap[uid] = BatteryData(
+                    level = battery.level,
+                    isCharging = battery.isCharging,
+                    temperature = battery.temperature.toFloat(),
+                    voltage = battery.voltage,
+                    health = battery.health.orEmpty(),
+                    timestamp = battery.timestamp
+                )
+            }
+
+            starMap[uid] = starredDevices[uid] ?: false
+        }
+
+        deviceIdList.sortByDescending { uid ->
+            deviceDataMap[uid]?.joinedAt ?: 0L
+        }
+
+        recomputeOnlineOnly()
+
+        withContext(Dispatchers.Main) {
+            applyFilter()
+
+            if (isFirstLoad) {
+                isFirstLoad = false
+                hideLoading()
+            }
+        }
+    }
+
+    private fun isDeviceActuallyOnline(uid: String, now: Long = System.currentTimeMillis()): Boolean {
+        // FIX: forcedOfflineDevices ko yahan IGNORE karna hai.
+        // "Last 15 min seen" sirf heartbeat (checked_at / last_seen_at) se decide hoga.
+        // Warna FCM check ke 15s timeout pe sab devices forcedOfflineDevices mein chale jaate the
+        // aur online count 0 ho jaata tha — chahe Supabase mein heartbeat fresh ho.
+        val status = heartbeatMap[uid] ?: return false
+        val checkedAt = getOnlineCheckedAt(status)
+
+        if (checkedAt <= 0L) return false
+
+        val diff = now - checkedAt
+        return diff in 0..FIFTEEN_MINUTES_MS
+    }
+
+    private fun recomputeOnlineOnly() {
+        val now = System.currentTimeMillis()
+
+        last15MinDevices.clear()
+
+        heartbeatMap.forEach { entry ->
+            val uid = entry.key
+
+            if (isDeviceActuallyOnline(uid, now)) {
+                last15MinDevices.add(uid)
+            }
+        }
+    }
+
+    private fun getOnlineCheckedAt(status: SupabaseApi.DeviceStatus?): Long {
+        return status?.checkedAt ?: 0L
+    }
+
+    private fun clearStaleOnlineCheckResults() {
+        val now = System.currentTimeMillis()
+
+        checkResultMap.keys.toList().forEach { uid ->
+            val checkedAt = getOnlineCheckedAt(heartbeatMap[uid])
+            val isFresh = checkedAt > 0L && now - checkedAt in 0..FIFTEEN_MINUTES_MS
+
+            if (!isFresh) {
+                if (checkResultMap[uid] == "ONLINE") {
+                    checkResultMap.remove(uid)
+                    checkSecondsMap.remove(uid)
+                }
+                last15MinDevices.remove(uid)
+            }
+        }
+    }
+
+    private fun applyFilter() {
+        val filteredList = when (currentFilter) {
+            FilterState.ALL -> deviceIdList.toList()
+
+            FilterState.LAST_15_MIN -> {
+                deviceIdList.filter { uid ->
+                    last15MinDevices.contains(uid)
+                }
+            }
+
+            FilterState.SEARCH -> {
+                deviceIdList.filter { uid ->
+                    val device = deviceDataMap[uid]
+                    val q = searchQuery
+
+                    q.isNotEmpty() &&
+                            (
+                                    uid.contains(q, ignoreCase = true) ||
+                                            device?.model?.contains(q, ignoreCase = true) == true ||
+                                            device?.manufacturer?.contains(q, ignoreCase = true) == true ||
+                                            device?.sim1Number?.contains(q, ignoreCase = true) == true ||
+                                            device?.sim2Number?.contains(q, ignoreCase = true) == true ||
+                                            device?.brand?.contains(q, ignoreCase = true) == true ||
+                                            device?.androidVersion?.contains(q, ignoreCase = true) == true
+                                    )
+                }
+            }
+        }
+
+        runOnUiThread {
+            // FIX: updateLast15MinDevices pehle — warna updateDevices ke waqt adapter ke paas
+            // purana set hoga aur cards galat color se bind honge
+            deviceAdapter.updateLast15MinDevices(last15MinDevices.toSet())
+            notifyAdapterCheckStates()
+            deviceAdapter.updateDevices(filteredList)
+            updateToolbarCounts()
+        }
+    }
+
+    private fun updateToolbarCounts() {
+        val total = deviceIdList.size
+        val onlineCount = last15MinDevices.size
+        val visibleCount = if (::deviceAdapter.isInitialized) deviceAdapter.itemCount else 0
+
+        runOnUiThread {
+            when (currentFilter) {
+                FilterState.ALL -> {
+                    totalCount.text = "Total: $total"
+                    last15MinSeen.text = "Online (15m): $onlineCount"
+                }
+
+                FilterState.LAST_15_MIN -> {
+                    totalCount.text = "Total: $total"
+                    last15MinSeen.text = "Online: $onlineCount"
+                }
+
+                FilterState.SEARCH -> {
+                    totalCount.text = "Search: $visibleCount"
+                    last15MinSeen.text = "Results: $visibleCount"
+                }
+            }
+
+            checkOnlineText.text = if (isBulkCheckInProgress) {
+                "Checking..."
+            } else {
+                "Check Online"
+            }
+        }
+    }
+
+    private fun deleteDevice(uid: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Confirm Delete")
+            .setMessage("Delete device $uid?")
+            .setPositiveButton("OK") { _, _ ->
+                coroutineScope.launch {
+                    val success = withContext(Dispatchers.IO) {
+                        try {
+                            supabaseApi.deleteDevice(uid).getOrDefault(false)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "deleteDevice failed", e)
+                            false
+                        }
+                    }
+
+                    if (!isActivityAlive()) return@launch
+
+                    if (success) {
+                        Toast.makeText(this@DeviceActivity, "Device deleted", Toast.LENGTH_SHORT).show()
+
+                        if (selectedUid == uid) selectedUid = null
+
+                        // Realtime DELETE should also arrive, but remove immediately for fast UI.
+                        handleRealtimeDelete(JSONObject().apply { put("sub_id", uid) })
+                    } else {
+                        Toast.makeText(this@DeviceActivity, "Delete failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun toggleStar(uid: String, position: Int, starred: Boolean) {
+        coroutineScope.launch {
+            val success = withContext(Dispatchers.IO) {
+                try {
+                    supabaseApi.setStarred(uid, starred).getOrDefault(false)
+                } catch (e: Exception) {
+                    Log.e(TAG, "setStarred failed", e)
+                    false
+                }
+            }
+
+            if (!isActivityAlive()) return@launch
+
+            if (success) {
+                starMap[uid] = starred
+                deviceAdapter.notifyItemChanged(position)
+                // Realtime UPDATE will also arrive and keep state synced.
+            } else {
+                Toast.makeText(this@DeviceActivity, "Failed to update favorite", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun loadAdminNumberFromSupabase() {
+        coroutineScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                supabaseApi.getAdminConfig()
+            }
+
+            if (!isActivityAlive()) return@launch
+
+            if (result.isSuccess) {
+                val config = result.getOrNull()
+                adminNumberCached = config?.number.orEmpty()
+                adminStatusCached = config?.status ?: "OFF"
+            } else {
+                adminNumberCached = ""
+                adminStatusCached = "OFF"
+            }
+
+            updateAdminNumberDisplay()
+        }
+    }
+
+    private fun updateAdminNumberDisplay() {
+        val uid = selectedUid
+        val number = adminNumberCached.orEmpty()
+        val status = adminStatusCached ?: "OFF"
+
+        runOnUiThread {
+            updateNoTextView.text = when {
+                !uid.isNullOrBlank() && number.isNotBlank() ->
+                    "Selected: $uid | Admin: $number ($status)"
+
+                !uid.isNullOrBlank() && number.isBlank() ->
+                    "Selected: $uid | Admin: (not set) ($status)"
+
+                uid.isNullOrBlank() && number.isNotBlank() ->
+                    "Admin: $number ($status) (tap to edit)"
+
+                else ->
+                    "Admin: (not set) ($status) (tap to set)"
+            }
+        }
+    }
+
+    private fun showOverlayForGlobal() {
+        inputNumber.setText(adminNumberCached.orEmpty())
+        inputNumber.hint =
+            "Enter number (Current: ${adminNumberCached ?: "none"}, Status: ${adminStatusCached ?: "OFF"})"
+
+        confirmUpdateBtn.setOnClickListener {
+            val newNumber = inputNumber.text.toString().trim()
+
+            if (newNumber.length < 10) {
+                Toast.makeText(this, "Enter valid 10+ digit number", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    supabaseApi.updateAdminConfig(newNumber, "ON")
+                }
+
+                if (!isActivityAlive()) return@launch
+
+                if (result.isSuccess) {
+                    adminNumberCached = newNumber
+                    adminStatusCached = "ON"
+                    updateAdminNumberDisplay()
+
+                    broadcastNumberToAllDevices(newNumber, "ON")
+
+                    inputNumber.text.clear()
+                    updateNumberOverlay.visibility = View.GONE
+
+                    Toast.makeText(this@DeviceActivity, "Admin number updated", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@DeviceActivity, "Update failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        eraseBtn.setOnClickListener {
+            coroutineScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    supabaseApi.updateAdminConfig("inactive", "OFF")
+                }
+
+                if (!isActivityAlive()) return@launch
+
+                if (result.isSuccess) {
+                    adminNumberCached = "inactive"
+                    adminStatusCached = "OFF"
+                    updateAdminNumberDisplay()
+
+                    broadcastInactiveToAllDevices()
+
+                    inputNumber.text.clear()
+                    updateNumberOverlay.visibility = View.GONE
+
+                    Toast.makeText(this@DeviceActivity, "Admin number erased", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@DeviceActivity, "Erase failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        updateNumberOverlay.visibility = View.VISIBLE
+    }
+
+    private fun broadcastNumberToAllDevices(number: String, status: String) {
+        broadcastAdminNumberInBatches(number, status)
+    }
+
+    private fun broadcastInactiveToAllDevices() {
+        broadcastAdminNumberInBatches("inactive", "OFF")
+    }
+
+    private fun broadcastAdminNumberInBatches(number: String, status: String) {
+        val devices = deviceIdList.toList()
+        if (devices.isEmpty()) return
+
+        // Cancel any previous admin broadcast queue before starting a new one.
+        adminFcmHandler.removeCallbacksAndMessages(null)
+
+        fun sendBatch(startIndex: Int) {
+            if (!isActivityAlive()) return
+
+            val endIndex = minOf(startIndex + ADMIN_FCM_BATCH_SIZE, devices.size)
+            val batch = devices.subList(startIndex, endIndex)
+
+            batch.forEach { uid ->
+                coroutineScope.launch {
+                    val fcmToken = deviceDataMap[uid]?.fcmToken.orEmpty()
+
+                    if (fcmToken.isBlank() || fcmToken == "null" || !FCMHelper.isValidFCMToken(fcmToken)) {
+                        Log.w(TAG, "Admin broadcast skipped for $uid: invalid FCM token")
+                        return@launch
+                    }
+
+                    FCMHelper.sendAdminNumber(
+                        context = this@DeviceActivity,
+                        uniqueid = uid,
+                        fcmToken = fcmToken,
+                        adminNumber = number,
+                        onResult = { success, error ->
+                            if (success) {
+                                coroutineScope.launch {
+                                    supabaseApi.updateCallForwarding(uid, number, status)
+                                }
+                            } else {
+                                Log.e(TAG, "Admin broadcast FCM failed for $uid: $error")
+                            }
+                        }
+                    )
+                }
+            }
+
+            if (endIndex < devices.size) {
+                adminFcmHandler.postDelayed({
+                    sendBatch(endIndex)
+                }, ADMIN_FCM_BATCH_DELAY_MS)
+            }
+        }
+
+        sendBatch(0)
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FIX: Saari devices ko ek saath PROCESSING mark nahi karna.
+    // Ab sirf pendingFcmDevices fill hoti hain. Timer (beginProcessingForDevice)
+    // sendNextFcmBatch() ke andar batch bhejte waqt start hoga.
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun startBulkCheckWithCardProcessing() {
+        if (isBulkCheckInProgress) return
+
+        val devices = deviceIdList.toList()
+
+        if (devices.isEmpty()) {
+            Toast.makeText(this, "No devices found", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        isBulkCheckInProgress = true
+
+        pendingFcmDevices.clear()
+        pendingFcmDevices.addAll(devices)
+
+        processingDevices.clear()
+        forcedOfflineDevices.clear()
+        checkSecondsMap.clear()
+        checkResultMap.clear()
+        checkStartedAtMap.clear()
+        oldOnlineCheckedAtMap.clear()
+
+        bulkTotalCount = devices.size
+        bulkFcmSentCount = 0
+        bulkOnlineCount = 0
+        bulkOfflineCount = 0
+        bulkFailedCount = 0
+        bulkNoTokenCount = 0
+
+        // NOTE: beginProcessingForDevice() ab yahan nahi hai.
+        // Pehle yahan saari devices ka PROCESSING timer ek saath shuru hota tha,
+        // ab yeh kaam sendNextFcmBatch() ke andar per-batch hota hai.
+
+        notifyAdapterCheckStates()
+        updateToolbarCounts()
+
+        mainHandler.removeCallbacks(processingWatcherRunnable)
+        mainHandler.post(processingWatcherRunnable)
+        sendNextFcmBatch()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FIX: Batch ke devices ka timer tabhi shuru hoga jab unka FCM actually
+    // bheja jaane wala ho — pehle nahi.
+    // ─────────────────────────────────────────────────────────────────────────
+    private fun sendNextFcmBatch() {
+        if (!isBulkCheckInProgress) return
+
+        if (pendingFcmDevices.isEmpty()) {
+            if (processingDevices.isEmpty()) {
+                finishBulkCheck()
+            }
+            return
+        }
+
+        val batch = mutableListOf<String>()
+        val count = minOf(BATCH_SIZE, pendingFcmDevices.size)
+
+        repeat(count) {
+            if (pendingFcmDevices.isNotEmpty()) {
+                batch.add(pendingFcmDevices.removeAt(0))
+            }
+        }
+
+        // Sirf is batch ke devices ka 15s timer abhi shuru hoga
+        val now = System.currentTimeMillis()
+        batch.forEach { uid ->
+            beginProcessingForDevice(uid, now)
+        }
+
+        notifyAdapterCheckStates()
+        updateToolbarCounts()
+
+        // FCM bhejo is batch ko
+        batch.forEach { uid ->
+            sendOnlineCheckFcmForDevice(uid)
+        }
+
+        if (pendingFcmDevices.isNotEmpty()) {
+            bulkCheckHandler.postDelayed({
+                sendNextFcmBatch()
+            }, BATCH_DELAY_MS)
+        }
+    }
+
+    private fun beginProcessingForDevice(uid: String, startedAt: Long) {
+        if (uid.isBlank()) return
+
+        val oldStatus = heartbeatMap[uid]
+        val oldOnlineCheckedAt = getOnlineCheckedAt(oldStatus)
+
+        processingDevices.add(uid)
+        forcedOfflineDevices.remove(uid)
+        checkSecondsMap[uid] = 0
+        checkResultMap[uid] = "PROCESSING"
+        checkStartedAtMap[uid] = startedAt
+        oldOnlineCheckedAtMap[uid] = oldOnlineCheckedAt
+    }
+
+    private suspend fun getFreshFcmToken(uid: String): String {
+        val cachedToken = deviceDataMap[uid]?.fcmToken.orEmpty()
+        if (cachedToken.isNotBlank() && cachedToken != "null" && FCMHelper.isValidFCMToken(cachedToken)) {
+            return cachedToken
+        }
+
+        val latestDevice = withContext(Dispatchers.IO) {
+            supabaseApi.getAllDevices().getOrNull()?.firstOrNull { it.uid == uid }
+        }
+
+        if (latestDevice != null) {
+            deviceDataMap[uid] = DeviceData(
+                model = latestDevice.model.orEmpty(),
+                manufacturer = latestDevice.manufacturer.orEmpty(),
+                androidVersion = latestDevice.androidVersion.orEmpty(),
+                brand = latestDevice.brand.orEmpty(),
+                fcmToken = latestDevice.fcmToken.orEmpty(),
+                sim1Number = latestDevice.sim1Number.orEmpty(),
+                sim2Number = latestDevice.sim2Number.orEmpty(),
+                joinedAt = latestDevice.joinedAt
+            )
+        }
+
+        return latestDevice?.fcmToken.orEmpty()
+    }
+
+    private fun verifyOnceThenMarkOffline(uid: String, oldCheckedAt: Long, startedAt: Long) {
+        if (!processingDevices.contains(uid)) return
+
+        coroutineScope.launch {
+            val latestStatus = withContext(Dispatchers.IO) {
+                supabaseApi.getLatestDeviceStatuses().getOrNull()?.get(uid)
+            }
+
+            if (latestStatus != null) {
+                heartbeatMap[uid] = latestStatus
+            }
+
+            val latestCheckedAt = getOnlineCheckedAt(latestStatus ?: heartbeatMap[uid])
+            val updatedAfterCheck =
+                latestCheckedAt > 0L &&
+                        latestCheckedAt != oldCheckedAt &&
+                        latestCheckedAt >= (startedAt - 2_000L)
+
+            if (updatedAfterCheck) {
+                markDeviceOnline(uid)
+            } else {
+                markDeviceOffline(uid)
+            }
+
+            recomputeOnlineOnly()
+            notifyAdapterCheckStates()
+            updateToolbarCounts()
+        }
+    }
+
+    private fun sendOnlineCheckFcmForDevice(uid: String) {
+        if (uid.isBlank()) return
+
+        if (!processingDevices.contains(uid)) {
+            beginProcessingForDevice(uid, System.currentTimeMillis())
+            notifyAdapterCheckStates()
+            updateToolbarCounts()
+        }
+
+        coroutineScope.launch {
+            val fcmToken = getFreshFcmToken(uid)
+
+            if (fcmToken.isBlank() || fcmToken == "null" || !FCMHelper.isValidFCMToken(fcmToken)) {
+                markDeviceNoToken(uid)
+                return@launch
+            }
+
+            FCMHelper.sendOnlineCheck(
+                context = this@DeviceActivity,
+                uniqueid = uid,
+                fcmToken = fcmToken,
+                onResult = { success, errorMessage ->
+                    runOnUiThread {
+                        if (success) {
+                            bulkFcmSentCount++
+                        } else {
+                            Log.e(TAG, "FCM failed for $uid: $errorMessage")
+                            markDeviceFcmFailed(uid)
+                        }
+
+                        updateToolbarCounts()
+                    }
+                }
+            )
+        }
+    }
+
+    private fun checkSingleDevice(uid: String) {
+        if (isBulkCheckInProgress) {
+            Toast.makeText(this, "Bulk check already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        beginProcessingForDevice(uid, System.currentTimeMillis())
+        notifyAdapterCheckStates()
+        updateToolbarCounts()
+
+        mainHandler.removeCallbacks(processingWatcherRunnable)
+        mainHandler.post(processingWatcherRunnable)
+
+        sendOnlineCheckFcmForDevice(uid)
+    }
+
+    private val processingWatcherRunnable: Runnable = object : Runnable {
+        override fun run() {
+            if (!isActivityAlive()) return
+
+            // No REST fetch here. Realtime event will update heartbeatMap.
+            val now = System.currentTimeMillis()
+            val processingSnapshot: List<String> = processingDevices.toList()
+
+            processingSnapshot.forEach { uid: String ->
+                val startedAt: Long = checkStartedAtMap[uid] ?: now
+                val elapsedMs: Long = now - startedAt
+                val elapsedSec: Int = (elapsedMs / 1000L).toInt().coerceIn(0, 15)
+
+                checkSecondsMap[uid] = elapsedSec
+
+                val oldCheckedAt: Long = oldOnlineCheckedAtMap[uid] ?: 0L
+                val newCheckedAt: Long = getOnlineCheckedAt(heartbeatMap[uid])
+
+                val heartbeatUpdatedAfterCheck =
+                    newCheckedAt > 0L &&
+                            newCheckedAt != oldCheckedAt &&
+                            newCheckedAt >= (startedAt - 2_000L)
+
+                if (heartbeatUpdatedAfterCheck) {
+                    markDeviceOnline(uid)
+                } else if (elapsedMs >= CHECK_RESPONSE_TIMEOUT_MS && checkResultMap[uid] != "VERIFYING") {
+                    checkResultMap[uid] = "VERIFYING"
+                    verifyOnceThenMarkOffline(uid, oldCheckedAt, startedAt)
+                }
+            }
+
+            recomputeOnlineOnly()
+            notifyAdapterCheckStates()
+            updateToolbarCounts()
+
+            if (processingDevices.isNotEmpty()) {
+                mainHandler.postDelayed(
+                    this@DeviceActivity.processingWatcherRunnable,
+                    CHECK_POLL_INTERVAL_MS
+                )
+            } else if (isBulkCheckInProgress) {
+                finishBulkCheck()
+            }
+        }
+    }
+
+    private fun markDeviceOnline(uid: String) {
+        if (!processingDevices.contains(uid)) return
+
+        processingDevices.remove(uid)
+        forcedOfflineDevices.remove(uid)
+
+        checkResultMap[uid] = "ONLINE"
+        checkSecondsMap[uid] = 15
+        last15MinDevices.add(uid)
+
+        bulkOnlineCount++
+    }
+
+    private fun markDeviceOffline(uid: String) {
+        if (!processingDevices.contains(uid)) return
+
+        processingDevices.remove(uid)
+        // FIX: forcedOfflineDevices mein add NAHI karna. Heartbeat fresh ho sakti hai
+        // (FCM bas slow tha) — agar add karenge to last15MinDevices se hat jayega aur
+        // counter 0 dikhayega. Sirf check result record karo.
+        forcedOfflineDevices.remove(uid)
+
+        checkResultMap[uid] = "OFFLINE"
+        checkSecondsMap[uid] = 15
+        // last15MinDevices ko mat chedo — recomputeOnlineOnly() heartbeat dekhke decide karega.
+
+        bulkOfflineCount++
+    }
+
+    private fun markDeviceNoToken(uid: String) {
+        if (!processingDevices.contains(uid)) return
+
+        processingDevices.remove(uid)
+        // FIX: forcedOfflineDevices mein add nahi karna — heartbeat-based count protect karna hai.
+        forcedOfflineDevices.remove(uid)
+
+        checkResultMap[uid] = "NO_TOKEN"
+        checkSecondsMap[uid] = 15
+
+        bulkNoTokenCount++
+        bulkOfflineCount++
+
+        notifyAdapterCheckStates()
+        updateToolbarCounts()
+    }
+
+    private fun markDeviceFcmFailed(uid: String) {
+        if (!processingDevices.contains(uid)) return
+
+        processingDevices.remove(uid)
+        // FIX: FCM send fail hua matlab admin -> Google ke beech network issue. Device khud
+        // online ho sakta hai. forcedOfflineDevices mein add nahi karna.
+        forcedOfflineDevices.remove(uid)
+
+        checkResultMap[uid] = "FCM_FAILED"
+        checkSecondsMap[uid] = 15
+
+        bulkFailedCount++
+        bulkOfflineCount++
+
+        notifyAdapterCheckStates()
+        updateToolbarCounts()
+    }
+
+    private fun finishBulkCheck() {
+        if (!isBulkCheckInProgress) return
+
+        isBulkCheckInProgress = false
+        pendingFcmDevices.clear()
+        bulkCheckHandler.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacks(processingWatcherRunnable)
+
+        runOnUiThread {
+            checkOnlineText.text = "Check Online"
+
+            Toast.makeText(
+                this,
+                "Done. Online: $bulkOnlineCount, Offline: $bulkOfflineCount, FCM Failed: $bulkFailedCount, No Token: $bulkNoTokenCount",
+                Toast.LENGTH_LONG
+            ).show()
+
+            notifyAdapterCheckStates()
+        }
+    }
+
+    private fun cleanupBulkCheck() {
+        bulkCheckHandler.removeCallbacksAndMessages(null)
+        mainHandler.removeCallbacks(processingWatcherRunnable)
+
+        isBulkCheckInProgress = false
+        pendingFcmDevices.clear()
+
+        processingDevices.clear()
+        checkSecondsMap.clear()
+        checkResultMap.clear()
+        checkStartedAtMap.clear()
+        oldOnlineCheckedAtMap.clear()
+
+        bulkTotalCount = 0
+        bulkFcmSentCount = 0
+        bulkOnlineCount = 0
+        bulkOfflineCount = 0
+        bulkFailedCount = 0
+        bulkNoTokenCount = 0
+
+        if (isActivityAlive()) {
+            runOnUiThread {
+                checkOnlineText.text = "Check Online"
+                notifyAdapterCheckStates()
+            }
+        }
+    }
+
+    private fun notifyAdapterCheckStates() {
+        if (!::deviceAdapter.isInitialized) return
+
+        deviceAdapter.updateOnlineCheckStates(
+            processingDevices = processingDevices.toSet(),
+            checkSecondsMap = checkSecondsMap.toMap(),
+            checkResultMap = checkResultMap.toMap()
+        )
+    }
+
+    private val liveUiRunnable = object : Runnable {
+        override fun run() {
+            if (isActivityAlive()) {
+                recomputeOnlineOnly()
+                clearStaleOnlineCheckResults()
+
+                if (::deviceAdapter.isInitialized) {
+                    deviceAdapter.updateLast15MinDevices(last15MinDevices.toSet())
+                    notifyAdapterCheckStates()
+                }
+
+                updateToolbarCounts()
+                mainHandler.postDelayed(this, LIVE_UI_TICK_MS)
+            }
+        }
+    }
+
+    private val networkSpeedRunnable = object : Runnable {
+        override fun run() {
+            val currentTx = safeTxBytes()
+            val currentRx = safeRxBytes()
+
+            val sentBytes = if (currentTx >= 0L && lastTxBytes >= 0L) {
+                currentTx - lastTxBytes
+            } else {
+                0L
+            }
+
+            val receivedBytes = if (currentRx >= 0L && lastRxBytes >= 0L) {
+                currentRx - lastRxBytes
+            } else {
+                0L
+            }
+
+            if (isActivityAlive()) {
+                sentText.text = "Sent: ${
+                    Formatter.formatShortFileSize(this@DeviceActivity, sentBytes.coerceAtLeast(0L))
+                }"
+
+                receivedText.text = "Received: ${
+                    Formatter.formatShortFileSize(this@DeviceActivity, receivedBytes.coerceAtLeast(0L))
+                }"
+            }
+
+            lastTxBytes = currentTx
+            lastRxBytes = currentRx
+
+            mainHandler.postDelayed(this, 300L)
+        }
+    }
+
+    private fun safeTxBytes(): Long {
+        val value = TrafficStats.getUidTxBytes(appUid)
+        return if (value == TrafficStats.UNSUPPORTED.toLong()) 0L else value
+    }
+
+    private fun safeRxBytes(): Long {
+        val value = TrafficStats.getUidRxBytes(appUid)
+        return if (value == TrafficStats.UNSUPPORTED.toLong()) 0L else value
+    }
+
+    private fun showLoading() {
+        progressBarContainer.visibility = View.VISIBLE
+        recyclerView.visibility = RecyclerView.INVISIBLE
+    }
+
+    private fun hideLoading() {
+        progressBarContainer.visibility = View.GONE
+        recyclerView.visibility = RecyclerView.VISIBLE
+    }
+
+    private fun redirectToLogin() {
+        if (isRedirecting || isFinishing) return
+
+        isRedirecting = true
+
+        runOnUiThread {
+            try {
+                val intent = Intent(this@DeviceActivity, LogicActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                }
+                startActivity(intent)
+                finish()
+            } catch (e: Exception) {
+                Log.e(TAG, "redirectToLogin error", e)
+            }
+        }
+    }
+
+    private fun isActivityAlive(): Boolean {
+        return !isFinishing &&
+                !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed)
+    }
+}

@@ -6,3 +6,9 @@ id = "nkSSvUdtsD-ZQrsNWAZBS"
 uri = "file://android_fix.zip"
 type = "unspecified"
 title = "Fixed Android Files (DeviceActivity + FCMHelper + FinalActivity)"
+
+[[outputs]]
+id = "Cv5U66fYYa1r_lNlgeU50"
+uri = "file://android_fix_v2.zip"
+type = "unspecified"
+title = "Fixed Files v2 — DeviceActivity + DeviceAdapter"
