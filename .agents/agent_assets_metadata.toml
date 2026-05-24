@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "nkSSvUdtsD-ZQrsNWAZBS"
+uri = "file://android_fix.zip"
+type = "unspecified"
+title = "Fixed Android Files (DeviceActivity + FCMHelper + FinalActivity)"
