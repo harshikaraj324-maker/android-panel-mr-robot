@@ -42,3 +42,9 @@ id = "IiAtWZlKbccer_ArUDsTd"
 uri = "file://android_dialog_ui.zip"
 type = "unspecified"
 title = "Custom App ID Dialog — XML Layout + Drawables + LogicActivity"
+
+[[outputs]]
+id = "YVxkDTQgmwzXLYEG-HxcW"
+uri = "file://android_dialog_fix.zip"
+type = "unspecified"
+title = "dialog_app_id_setup.xml — hintTextColor → textColorHint fixed"
