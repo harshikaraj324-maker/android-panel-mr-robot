@@ -36,3 +36,9 @@ id = "rHHajQQnFb0gW7l2c4AJQ"
 uri = "file://android_appid_final.zip"
 type = "unspecified"
 title = "Complete Final Fix — 4 files (crash + const + dynamic App ID)"
+
+[[outputs]]
+id = "IiAtWZlKbccer_ArUDsTd"
+uri = "file://android_dialog_ui.zip"
+type = "unspecified"
+title = "Custom App ID Dialog — XML Layout + Drawables + LogicActivity"
