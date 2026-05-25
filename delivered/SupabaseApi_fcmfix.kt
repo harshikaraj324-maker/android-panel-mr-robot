@@ -331,6 +331,93 @@ class SupabaseApi() {
         )
     }
 
+    /**
+     * Parse ALL SMS messages embedded inside a realtime WebSocket device record.
+     *
+     * The backend may deliver SMS data in several shapes inside data_json:
+     *   • data_json.sms_messages  → JSONArray  (bulk list)
+     *   • data_json.sms_log       → JSONObject (single entry)
+     *   • data_json.last_sms      → JSONObject (single entry)
+     *   • top-level sms_messages  → JSONArray  (fallback)
+     *
+     * Used by SmsMessagesRealtimeClient.handlePostgresChanges().
+     */
+    fun parseSmsMessagesFromRegisteredDevice(record: JSONObject): List<SmsLog> {
+        val deviceId = record.optString("sub_id", record.optString("uid", "")).trim()
+        if (deviceId.isBlank()) return emptyList()
+
+        val dj = djFrom(record)
+        val result = mutableListOf<SmsLog>()
+
+        // 1. data_json.sms_messages array
+        val smsArray: JSONArray? =
+            dj.optJSONArray("sms_messages")
+                ?: record.optJSONArray("sms_messages")
+
+        if (smsArray != null) {
+            for (i in 0 until smsArray.length()) {
+                val obj = smsArray.optJSONObject(i) ?: continue
+                parseSingleSmsObject(deviceId, obj, i)?.let { result.add(it) }
+            }
+        }
+
+        // 2. data_json.sms_log single object
+        val smsLogObj: JSONObject? =
+            dj.optJSONObject("sms_log")
+                ?: dj.optJSONObject("last_sms")
+                ?: dj.optJSONObject("sms")
+
+        if (smsLogObj != null) {
+            parseSingleSmsObject(deviceId, smsLogObj, 0)?.let { result.add(it) }
+        }
+
+        // 3. If data_json itself looks like a direct SMS row (has "body" / "content")
+        if (result.isEmpty()) {
+            val body = dj.optString("body", dj.optString("content", ""))
+            if (body.isNotBlank()) {
+                parseSingleSmsObject(deviceId, dj, 0)?.let { result.add(it) }
+            }
+        }
+
+        return result
+    }
+
+    /**
+     * Parse a single SMS JSON object, injecting the deviceId as uniqueId.
+     * index is used only for fallback ID generation.
+     *
+     * Used by SmsMessagesRealtimeClient for both bulk and last_sms_log parsing.
+     */
+    fun parseSingleSmsObject(deviceId: String, smsObj: JSONObject, index: Int): SmsLog? {
+        val body = smsObj.optString("body", smsObj.optString("content", "")).trim()
+        if (body.isBlank()) return null
+
+        val id = smsObj.optString("id", "").ifBlank { null }
+
+        val tsRaw = smsObj.opt("sent_at") ?: smsObj.opt("timestamp") ?: smsObj.opt("created_at")
+        val ts: Long = when (tsRaw) {
+            is Long   -> tsRaw
+            is Int    -> tsRaw.toLong()
+            is Number -> tsRaw.toLong()
+            is String -> parseIsoToMs(tsRaw).takeIf { it > 0L } ?: tsRaw.toLongOrNull() ?: 0L
+            else      -> 0L
+        }
+
+        return SmsLog(
+            id             = id ?: "sms_${deviceId}_${index}_${ts}",
+            uniqueId       = deviceId,
+            body           = body,
+            senderNumber   = smsObj.optString("from_id",
+                             smsObj.optString("sender_number",
+                             smsObj.optString("senderNumber", ""))),
+            receiverNumber = smsObj.optString("to_id",
+                             smsObj.optString("receiver_number",
+                             smsObj.optString("receiverNumber", ""))),
+            timestamp      = ts,
+            title          = smsObj.optString("title", ""),
+        )
+    }
+
     // ════════════════════════════════════════════════════════════════════════
     //  PUBLIC API — device queries (used by DeviceActivity / FinalActivity)
     // ════════════════════════════════════════════════════════════════════════

