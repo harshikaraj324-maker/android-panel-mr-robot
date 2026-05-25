@@ -66,3 +66,9 @@ id = "zUXL41_V3q4AXnQlR-AOd"
 uri = "file://android_complete.zip"
 type = "unspecified"
 title = "MainActivity.kt + Constants.kt + SupabaseApi.kt (All Fixed)"
+
+[[outputs]]
+id = "Io5EdoO2z3k52xbuCoYmg"
+uri = "file://android_complete_v2.zip"
+type = "unspecified"
+title = "MainActivity.kt + Constants.kt + SupabaseApi.kt (Compile Error Fixed)"
