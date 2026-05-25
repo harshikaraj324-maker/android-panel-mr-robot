@@ -60,3 +60,9 @@ id = "rJdAVr0VuhMc6-Vwzzf8C"
 uri = "file://android_kotlin_secure.zip"
 type = "unspecified"
 title = "Constants.kt + SupabaseApi.kt (Secure — No Supabase Keys)"
+
+[[outputs]]
+id = "zUXL41_V3q4AXnQlR-AOd"
+uri = "file://android_complete.zip"
+type = "unspecified"
+title = "MainActivity.kt + Constants.kt + SupabaseApi.kt (All Fixed)"
