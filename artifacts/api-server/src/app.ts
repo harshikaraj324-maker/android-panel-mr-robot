@@ -25,7 +25,14 @@ app.use(
     },
   }),
 );
-app.use(cors());
+// Allow all origins including `null` (Android WebView loads pages from file://
+// which sends Origin: null — must be explicitly allowed here)
+app.use(cors({
+  origin: (origin, callback) => callback(null, true),
+  credentials: true,
+  methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
