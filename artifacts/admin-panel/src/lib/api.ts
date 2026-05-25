@@ -6,19 +6,25 @@ async function req<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   });
   const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(data.error ?? data.message ?? `HTTP ${res.status}`);
   return data as T;
 }
 
 export interface AppIdRow {
   id: number;
   app_id: string;
-  admin_label: string | null;
+  name: string | null;
+  pin: string;
+  status: "active" | "inactive" | "disabled";
   created_at: string;
   expires_at: string | null;
-  is_active: boolean;
   device_count: number;
   active_count: number;
+}
+
+export interface AppIdListResponse {
+  needs_setup: boolean;
+  rows: AppIdRow[];
 }
 
 export interface DeviceRow {
@@ -45,35 +51,59 @@ export interface Stats {
 
 export interface InitStatus {
   tables_exist: boolean;
+  has_pat: boolean;
   app_ids_error: string | null;
   devices_error: string | null;
 }
 
 export const api = {
   initStatus: () => req<InitStatus>("/admin/init-status"),
-  createTables: () => req<{ ok: boolean; tables_exist: boolean; message: string }>("/admin/init", { method: "POST" }),
+
+  setup: (pat: string) =>
+    req<{ ok: boolean; message: string }>("/admin/setup", {
+      method: "POST",
+      body: JSON.stringify({ pat }),
+    }),
+
   stats: () => req<Stats>("/admin/stats"),
 
   generateAppId: () => req<{ app_id: string }>("/admin/generate-app-id"),
 
-  listAppIds: () => req<AppIdRow[]>("/admin/app-ids"),
-  createAppId: (body: { app_id: string; password?: string; admin_label?: string }) =>
+  listAppIds: () => req<AppIdListResponse>("/admin/app-ids"),
+
+  createAppId: (body: { app_id: string; pin?: string; name?: string }) =>
     req<AppIdRow>("/admin/app-ids", { method: "POST", body: JSON.stringify(body) }),
-  changePassword: (appId: string, body: { current_password: string; new_password: string }) =>
-    req<{ ok: boolean; message: string }>(`/admin/app-ids/${appId}/password`, { method: "PATCH", body: JSON.stringify(body) }),
-  resetPassword: (appId: string) =>
-    req<{ ok: boolean; message: string }>(`/admin/app-ids/${appId}/reset-password`, { method: "POST" }),
+
+  changePin: (appId: string, newPin: string) =>
+    req<{ ok: boolean }>(`/admin/app-ids/${appId}/password`, {
+      method: "PATCH",
+      body: JSON.stringify({ new_password: newPin }),
+    }),
+
+  resetPin: (appId: string) =>
+    req<{ ok: boolean }>(`/admin/app-ids/${appId}/reset-password`, { method: "POST" }),
+
   extendSession: (appId: string) =>
     req<{ ok: boolean; expires_at: string }>(`/admin/app-ids/${appId}/extend`, { method: "POST" }),
-  toggleAppId: (appId: string, is_active: boolean) =>
-    req<{ ok: boolean }>(`/admin/app-ids/${appId}/toggle`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
+
+  setStatus: (appId: string, status: string) =>
+    req<{ ok: boolean }>(`/admin/app-ids/${appId}/toggle`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
+
   deleteAppId: (appId: string) =>
     req<{ ok: boolean }>(`/admin/app-ids/${appId}`, { method: "DELETE" }),
 
   listDevices: (app_id?: string) =>
     req<DeviceRow[]>(`/admin/devices${app_id ? `?app_id=${encodeURIComponent(app_id)}` : ""}`),
+
   toggleDevice: (id: number, is_active: boolean) =>
-    req<{ ok: boolean }>(`/admin/devices/${id}/toggle`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
+    req<{ ok: boolean }>(`/admin/devices/${id}/toggle`, {
+      method: "PATCH",
+      body: JSON.stringify({ is_active }),
+    }),
+
   deleteDevice: (id: number) =>
     req<{ ok: boolean }>(`/admin/devices/${id}`, { method: "DELETE" }),
 };
