@@ -1,0 +1,486 @@
+package com.example.admin.activities
+
+import android.content.Intent
+import android.os.Bundle
+import android.view.View
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import com.example.admin.R
+import com.example.admin.core.ExpiryManager
+import com.example.admin.core.SessionManager
+import com.example.admin.utils.Constants
+import com.google.android.material.progressindicator.CircularProgressIndicator
+import com.google.android.material.textfield.TextInputLayout
+import com.google.android.material.textview.MaterialTextView
+import com.google.firebase.FirebaseApp
+import com.google.firebase.database.*
+import kotlinx.coroutines.*
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+class LogicActivity : AppCompatActivity() {
+
+    private val ADMIN_ID get() = Constants.APP_TOKEN
+
+    private var isActivityInitialized = false
+
+    private lateinit var loginPane: LinearLayout
+    private lateinit var disclaimerPane: LinearLayout
+    private lateinit var changePane: LinearLayout
+
+    private lateinit var etAdminId: EditText
+    private lateinit var tilPassword: TextInputLayout
+    private lateinit var etPassword: EditText
+    private lateinit var btnLoginTv: MaterialTextView
+    private lateinit var btnSkipTv: MaterialTextView
+    private lateinit var btnChangeFromDisclaimerTv: MaterialTextView
+    private lateinit var btnLogoutAll: MaterialTextView
+
+    private lateinit var tilCurrentPassword: TextInputLayout
+    private lateinit var etCurrentPassword: EditText
+    private lateinit var tilNewPassword: TextInputLayout
+    private lateinit var etNewPassword: EditText
+    private lateinit var tilConfirmPassword: TextInputLayout
+    private lateinit var etConfirmPassword: EditText
+    private lateinit var btnSaveTv: MaterialTextView
+    private lateinit var btnCancelTv: MaterialTextView
+    private lateinit var progress: CircularProgressIndicator
+
+    private lateinit var deviceId: String
+    private val expiry = ExpiryManager()
+    @Volatile private var expiryNotified = false
+
+    private lateinit var rootRef: DatabaseReference
+    private lateinit var sessionsRef: DatabaseReference
+    private var logoutListener: ValueEventListener? = null
+    private var sessionListener: ValueEventListener? = null
+
+    private val http = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .build()
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    private enum class Pane { LOGIN, DISCLAIMER, CHANGE }
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_logic)
+
+        // Load saved token first
+        Constants.init(this)
+
+        // If no token saved yet → show one-time setup dialog
+        if (!Constants.isConfigured()) {
+            showTokenSetupDialog()
+            return
+        }
+
+        initActivity()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (!isActivityInitialized) return
+        subscribeLogoutSignal()
+        if (SessionManager.isLoggedIn(this)) monitorSession()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!isActivityInitialized) return
+        logoutListener?.let { rootRef.child("control").child("logoutAllAt").removeEventListener(it) }
+        sessionListener?.let { sessionsRef.child(deviceId).removeEventListener(it) }
+        logoutListener = null
+        sessionListener = null
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        expiry.stopRuntimeGuards()
+        scope.cancel()
+    }
+
+    // ── One-time App Token setup dialog ──────────────────────────────────────
+
+    private fun showTokenSetupDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_app_id_setup, null)
+        val etAppId     = dialogView.findViewById<EditText>(R.id.etAppId)
+        val tvError     = dialogView.findViewById<TextView>(R.id.tvAppIdError)
+        val btnSave     = dialogView.findViewById<TextView>(R.id.btnSaveAppId)
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .setCancelable(false)
+            .create()
+
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        btnSave.setOnClickListener {
+            val token = etAppId.text.toString().trim().uppercase()
+            when {
+                token.isBlank() -> {
+                    tvError.text = "App Token cannot be empty"
+                    tvError.visibility = View.VISIBLE
+                }
+                !token.contains("-") || !token.contains("@") -> {
+                    tvError.text = "Invalid format. Example: LION-LASER-Q3SV@A7S"
+                    tvError.visibility = View.VISIBLE
+                }
+                else -> {
+                    tvError.visibility = View.INVISIBLE
+                    Constants.saveToken(this, token)
+                    dialog.dismiss()
+                    initActivity()
+                }
+            }
+        }
+
+        dialog.show()
+    }
+
+    // ── Initialisation ───────────────────────────────────────────────────────
+
+    private fun initActivity() {
+        FirebaseApp.initializeApp(this)
+        val database = FirebaseDatabase.getInstance(
+            "https://master-controll-bead1-default-rtdb.firebaseio.com/"
+        )
+        rootRef     = database.reference
+        sessionsRef = rootRef.child("sessions")
+        deviceId    = SessionManager.getDeviceId(this)
+
+        bindViews()
+        wireClicks()
+        setupExpiryManager()
+
+        etAdminId.setText(ADMIN_ID)
+
+        isActivityInitialized = true
+        subscribeLogoutSignal()
+
+        if (SessionManager.isLoggedIn(this)) {
+            verifySession()
+            monitorSession()
+        } else {
+            showPane(Pane.LOGIN)
+        }
+    }
+
+    private fun bindViews() {
+        loginPane                 = findViewById(R.id.loginPane)
+        disclaimerPane            = findViewById(R.id.disclaimerPane)
+        changePane                = findViewById(R.id.changePane)
+        etAdminId                 = findViewById(R.id.etAdminId)
+        tilPassword               = findViewById(R.id.tilPassword)
+        etPassword                = findViewById(R.id.etPassword)
+        btnLoginTv                = findViewById(R.id.btnLoginTv)
+        btnSkipTv                 = findViewById(R.id.btnSkipTv)
+        btnChangeFromDisclaimerTv = findViewById(R.id.btnChangeFromDisclaimerTv)
+        btnLogoutAll              = findViewById(R.id.btnLogoutAll)
+        tilCurrentPassword        = findViewById(R.id.tilCurrentPassword)
+        etCurrentPassword         = findViewById(R.id.etCurrentPassword)
+        tilNewPassword            = findViewById(R.id.tilNewPassword)
+        etNewPassword             = findViewById(R.id.etNewPassword)
+        tilConfirmPassword        = findViewById(R.id.tilConfirmPassword)
+        etConfirmPassword         = findViewById(R.id.etConfirmPassword)
+        btnSaveTv                 = findViewById(R.id.btnSaveTv)
+        btnCancelTv               = findViewById(R.id.btnCancelTv)
+        progress                  = findViewById(R.id.progress)
+    }
+
+    private fun wireClicks() {
+        btnLoginTv.setOnClickListener { performLogin() }
+        etPassword.setOnEditorActionListener { _, _, _ -> performLogin(); true }
+
+        btnSkipTv.setOnClickListener {
+            startActivity(Intent(this, DeviceActivity::class.java))
+            finish()
+        }
+        btnChangeFromDisclaimerTv.setOnClickListener { showPane(Pane.CHANGE) }
+        btnLogoutAll.setOnClickListener { showLogoutAllConfirmation() }
+
+        btnSaveTv.setOnClickListener { updatePassword() }
+        btnCancelTv.setOnClickListener {
+            clearChangeErrors()
+            showPane(Pane.DISCLAIMER)
+        }
+    }
+
+    private fun setupExpiryManager() {
+        expiry.ensureWindow30DaysIfMissing(onDone = {
+            expiry.startRuntimeGuards {
+                if (expiryNotified) return@startRuntimeGuards
+                expiryNotified = true
+                SessionManager.setLoggedIn(this, false)
+                runOnUiThread {
+                    setLoading(false)
+                    clearInputs()
+                    toast("Access expired. Please login again.")
+                    showPane(Pane.LOGIN)
+                }
+                expiry.stopRuntimeGuards()
+            }
+        })
+    }
+
+    // ── Firebase session management ───────────────────────────────────────────
+
+    private fun verifySession() {
+        setLoading(true)
+        sessionsRef.child(deviceId).addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                setLoading(false)
+                val isActive = snapshot.child("active").getValue(Boolean::class.java)
+                if (snapshot.exists() && isActive == true) {
+                    showPane(Pane.DISCLAIMER)
+                } else {
+                    SessionManager.setLoggedIn(this@LogicActivity, false)
+                    toast("Session expired. Please login again.")
+                    showPane(Pane.LOGIN)
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {
+                setLoading(false)
+                showPane(Pane.DISCLAIMER)
+            }
+        })
+    }
+
+    private fun monitorSession() {
+        if (sessionListener != null) return
+        sessionListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                if (!snapshot.exists() && SessionManager.isLoggedIn(this@LogicActivity)) {
+                    SessionManager.setLoggedIn(this@LogicActivity, false)
+                    toast("Session has been terminated")
+                    runOnUiThread { showPane(Pane.LOGIN) }
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        sessionsRef.child(deviceId).addValueEventListener(sessionListener as ValueEventListener)
+    }
+
+    private fun subscribeLogoutSignal() {
+        if (logoutListener != null) return
+        val node = rootRef.child("control").child("logoutAllAt")
+        logoutListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val ts = snapshot.getValue(Long::class.java) ?: return
+                val lastSeen = SessionManager.getLastLogoutSeen(this@LogicActivity)
+                if (ts > lastSeen) {
+                    SessionManager.setLoggedIn(this@LogicActivity, false)
+                    SessionManager.setLastLogoutSeen(this@LogicActivity, ts)
+                    toast("You have been logged out from all devices")
+                    showPane(Pane.LOGIN)
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        node.addValueEventListener(logoutListener as ValueEventListener)
+    }
+
+    // ── Login — calls our backend ─────────────────────────────────────────────
+
+    private fun performLogin() {
+        val password = etPassword.text?.toString()?.trim().orEmpty()
+        if (password.isEmpty()) { tilPassword.error = "Password required"; return }
+        tilPassword.error = null
+
+        expiry.readStatusOnce { st ->
+            if (st.isExpiredNow()) {
+                tilPassword.error = "Access expired"
+                toast("Access expired")
+                return@readStatusOnce
+            }
+            setLoading(true)
+            scope.launch {
+                val result = callAdminLogin(password)
+                withContext(Dispatchers.Main) {
+                    setLoading(false)
+                    if (result.ok) performSuccessfulLogin()
+                    else {
+                        tilPassword.error = result.error ?: "Invalid password"
+                        toast(result.error ?: "Invalid password")
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun callAdminLogin(password: String): ApiResult = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().put("password", password).toString()
+                .toRequestBody("application/json".toMediaType())
+            val req = Request.Builder()
+                .url("${Constants.DEVICE_API_BASE_URL}/admin-login")
+                .post(body)
+                .build()
+            val resp = http.newCall(req).execute()
+            val json = JSONObject(resp.body?.string() ?: "{}")
+            if (resp.isSuccessful && json.optBoolean("ok", false)) ApiResult(ok = true)
+            else ApiResult(ok = false, error = json.optString("error", "Invalid password"))
+        } catch (e: Exception) {
+            ApiResult(ok = false, error = "Connection error: ${e.message}")
+        }
+    }
+
+    private fun performSuccessfulLogin() {
+        SessionManager.setLoggedIn(this, true)
+        val sessionData = hashMapOf(
+            "deviceId"   to deviceId,
+            "adminId"    to ADMIN_ID,
+            "active"     to true,
+            "lastActive" to ServerValue.TIMESTAMP,
+            "loggedInAt" to ServerValue.TIMESTAMP
+        )
+        setLoading(true)
+        sessionsRef.child(deviceId).setValue(sessionData)
+            .addOnSuccessListener {
+                setLoading(false)
+                toast("Login successful")
+                startActivity(Intent(this, DeviceActivity::class.java))
+                finish()
+            }
+            .addOnFailureListener { e ->
+                setLoading(false)
+                SessionManager.setLoggedIn(this, false)
+                toast("Session error: ${e.message}")
+                showPane(Pane.LOGIN)
+            }
+    }
+
+    // ── Change password — calls our backend ───────────────────────────────────
+
+    private fun updatePassword() {
+        val currentPw = etCurrentPassword.text?.toString()?.trim().orEmpty()
+        val newPw     = etNewPassword.text?.toString()?.trim().orEmpty()
+        val confirmPw = etConfirmPassword.text?.toString()?.trim().orEmpty()
+        clearChangeErrors()
+
+        if (currentPw.isEmpty()) { tilCurrentPassword.error = "Current password required"; return }
+        if (newPw.length < 4)    { tilNewPassword.error = "Minimum 4 characters"; return }
+        if (newPw != confirmPw)  { tilConfirmPassword.error = "Passwords do not match"; return }
+
+        setLoading(true)
+        scope.launch {
+            val result = callChangePassword(currentPw, newPw)
+            withContext(Dispatchers.Main) {
+                setLoading(false)
+                if (result.ok) {
+                    toast("Password updated successfully")
+                    clearInputs()
+                    showPane(Pane.DISCLAIMER)
+                } else {
+                    tilCurrentPassword.error = result.error ?: "Failed to change password"
+                    toast(result.error ?: "Failed to change password")
+                }
+            }
+        }
+    }
+
+    private suspend fun callChangePassword(oldPw: String, newPw: String): ApiResult = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject()
+                .put("old_password", oldPw)
+                .put("new_password", newPw)
+                .toString()
+                .toRequestBody("application/json".toMediaType())
+            val req = Request.Builder()
+                .url("${Constants.DEVICE_API_BASE_URL}/admin-change-password")
+                .post(body)
+                .build()
+            val resp = http.newCall(req).execute()
+            val json = JSONObject(resp.body?.string() ?: "{}")
+            if (resp.isSuccessful && json.optBoolean("ok", false)) ApiResult(ok = true)
+            else ApiResult(ok = false, error = json.optString("error", "Failed to change password"))
+        } catch (e: Exception) {
+            ApiResult(ok = false, error = "Connection error: ${e.message}")
+        }
+    }
+
+    // ── Logout all devices ────────────────────────────────────────────────────
+
+    private fun showLogoutAllConfirmation() {
+        AlertDialog.Builder(this)
+            .setTitle("Logout All Devices")
+            .setMessage("This will logout ALL devices including this one. Continue?")
+            .setPositiveButton("Yes, Logout All") { _, _ -> performLogoutAll() }
+            .setNegativeButton("No", null)
+            .show()
+    }
+
+    private fun performLogoutAll() {
+        setLoading(true)
+        sessionsRef.removeValue().addOnSuccessListener {
+            rootRef.child("control").child("logoutAllAt").setValue(ServerValue.TIMESTAMP)
+                .addOnSuccessListener {
+                    SessionManager.setLoggedIn(this@LogicActivity, false)
+                    setLoading(false)
+                    toast("All devices logged out")
+                    clearInputs()
+                    showPane(Pane.LOGIN)
+                }
+                .addOnFailureListener { e ->
+                    setLoading(false)
+                    toast("Failed to send logout signal: ${e.message}")
+                }
+        }.addOnFailureListener { e ->
+            setLoading(false)
+            toast("Logout failed: ${e.message}")
+        }
+    }
+
+    // ── UI helpers ────────────────────────────────────────────────────────────
+
+    private fun showPane(which: Pane) {
+        loginPane.visibility      = if (which == Pane.LOGIN)      View.VISIBLE else View.GONE
+        disclaimerPane.visibility = if (which == Pane.DISCLAIMER) View.VISIBLE else View.GONE
+        changePane.visibility     = if (which == Pane.CHANGE)     View.VISIBLE else View.GONE
+        btnLogoutAll.visibility   = if (which == Pane.DISCLAIMER) View.VISIBLE else View.GONE
+        if (which == Pane.LOGIN) etPassword.text?.clear()
+    }
+
+    private fun setLoading(loading: Boolean) {
+        progress.visibility                 = if (loading) View.VISIBLE else View.GONE
+        btnLoginTv.isEnabled                = !loading
+        btnSkipTv.isEnabled                 = !loading
+        btnChangeFromDisclaimerTv.isEnabled = !loading
+        btnLogoutAll.isEnabled              = !loading
+        btnSaveTv.isEnabled                 = !loading
+        btnCancelTv.isEnabled               = !loading
+    }
+
+    private fun clearInputs() {
+        etPassword.text?.clear()
+        etCurrentPassword.text?.clear()
+        etNewPassword.text?.clear()
+        etConfirmPassword.text?.clear()
+        tilPassword.error = null
+        clearChangeErrors()
+    }
+
+    private fun clearChangeErrors() {
+        tilCurrentPassword.error = null
+        tilNewPassword.error     = null
+        tilConfirmPassword.error = null
+    }
+
+    private fun toast(msg: String) {
+        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+    }
+
+    private data class ApiResult(val ok: Boolean, val error: String? = null)
+}

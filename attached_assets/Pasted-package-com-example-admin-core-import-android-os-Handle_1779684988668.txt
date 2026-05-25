@@ -1,0 +1,223 @@
+package com.example.admin.core
+
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.Looper
+import android.util.Log
+import com.google.firebase.database.*
+
+class ExpiryManager {
+
+    companion object {
+        private const val TAG = "ExpiryManager"
+        private const val THIRTY_DAYS_MS = 30L * 24 * 60 * 60 * 1000
+    }
+
+    data class Status(
+        val startAt: Long? = null,
+        val endAt: Long? = null,
+        val expired: Boolean? = null,
+        val expiredAt: Long? = null,
+        val sealed: Boolean? = null,
+        val sealedAt: Long? = null
+    ) {
+        fun isExpiredNow(): Boolean {
+            val now = System.currentTimeMillis()
+            return expired == true || (endAt != null && now >= endAt)
+        }
+
+        fun millisLeft(): Long {
+            val now = System.currentTimeMillis()
+            val end = endAt ?: return 0L
+            return (end - now).coerceAtLeast(0L)
+        }
+    }
+
+    private val ui = Handler(Looper.getMainLooper())
+    private val db: DatabaseReference = FirebaseDatabase.getInstance().getReference("expiry")
+
+    private val bgThread = HandlerThread("expiry-guard-thread").apply { start() }
+    private val bg = Handler(bgThread.looper)
+
+    private var runtimeListener: ValueEventListener? = null
+    private var expireRunnable: Runnable? = null
+
+    @Volatile
+    private var firedExpireCallback = false
+
+    fun readStatusOnce(cb: (Status) -> Unit) {
+        db.addListenerForSingleValueEvent(object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                ui.post { cb(snapshot.toStatusSafe()) }
+            }
+            override fun onCancelled(error: DatabaseError) {
+                Log.e(TAG, "readStatusOnce: ${error.message}")
+                ui.post { cb(Status()) }
+            }
+        })
+    }
+
+    fun ensureWindow30DaysIfMissing(onDone: (() -> Unit)? = null) {
+        db.runTransaction(object : Transaction.Handler {
+            override fun doTransaction(m: MutableData): Transaction.Result {
+                val hasStart = m.child("startAt").value != null
+                val hasEnd = m.child("endAt").value != null
+                if (hasStart && hasEnd) return Transaction.success(m)
+                val now = System.currentTimeMillis()
+                m.child("startAt").value = now
+                m.child("endAt").value = now + THIRTY_DAYS_MS
+                m.child("expired").value = false
+                m.child("expiredAt").value = null
+                m.child("sealed").value = true
+                m.child("sealedAt").value = now
+                return Transaction.success(m)
+            }
+            override fun onComplete(error: DatabaseError?, committed: Boolean, snapshot: DataSnapshot?) {
+                if (error != null) Log.e(TAG, "ensureWindow30DaysIfMissing: ${error.message}")
+                onDone?.invoke()
+            }
+        })
+    }
+
+    fun startRuntimeGuards(onExpire: () -> Unit) {
+        stopRuntimeGuards()
+        firedExpireCallback = false
+        runtimeListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                val status = snapshot.toStatusSafe()
+                if (status.startAt == null || status.endAt == null) {
+                    ensureWindow30DaysIfMissing()
+                    return
+                }
+                if (status.isExpiredNow()) {
+                    markExpiredIfNeeded {
+                        if (!firedExpireCallback) {
+                            firedExpireCallback = true
+                            ui.post { onExpire() }
+                        }
+                    }
+                } else {
+                    scheduleExpireAt(status.endAt, onExpire)
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {
+                Log.e(TAG, "runtime guard cancelled: ${error.message}")
+            }
+        }
+        db.addValueEventListener(runtimeListener as ValueEventListener)
+    }
+
+    fun stopRuntimeGuards() {
+        runtimeListener?.let { db.removeEventListener(it) }
+        runtimeListener = null
+        expireRunnable?.let { bg.removeCallbacks(it) }
+        expireRunnable = null
+    }
+
+    fun shutdown() {
+        stopRuntimeGuards()
+        try { bgThread.quitSafely() } catch (_: Throwable) {}
+    }
+
+    private fun scheduleExpireAt(endAt: Long?, onExpire: () -> Unit) {
+        if (endAt == null) return
+        expireRunnable?.let { bg.removeCallbacks(it) }
+        val delay = (endAt - System.currentTimeMillis()).coerceAtLeast(0L)
+        expireRunnable = Runnable {
+            markExpiredIfNeeded {
+                if (!firedExpireCallback) {
+                    firedExpireCallback = true
+                    ui.post { onExpire() }
+                }
+            }
+        }
+        bg.postDelayed(expireRunnable!!, delay)
+    }
+
+    private fun markExpiredIfNeeded(onDone: (() -> Unit)? = null) {
+        val now = System.currentTimeMillis()
+        db.runTransaction(object : Transaction.Handler {
+            override fun doTransaction(m: MutableData): Transaction.Result {
+                val expired = m.child("expired").getValue(Boolean::class.java) == true
+                val endAt = m.child("endAt").longValue()
+                if (!expired && endAt != null && now >= endAt) {
+                    m.child("expired").value = true
+                    m.child("expiredAt").value = now
+                }
+                return Transaction.success(m)
+            }
+            override fun onComplete(error: DatabaseError?, committed: Boolean, snapshot: DataSnapshot?) {
+                if (error != null) Log.e(TAG, "markExpiredIfNeeded: ${error.message}")
+                onDone?.invoke()
+            }
+        })
+    }
+
+    fun reset30Days(onDone: (() -> Unit)? = null) {
+        val now = System.currentTimeMillis()
+        val data = mapOf<String, Any?>(
+            "startAt" to now,
+            "endAt" to now + THIRTY_DAYS_MS,
+            "expired" to false,
+            "expiredAt" to null,
+            "sealed" to true,
+            "sealedAt" to now
+        )
+        db.setValue(data).addOnCompleteListener { onDone?.invoke() }
+    }
+
+    @Deprecated("Use ensureWindow30DaysIfMissing()", ReplaceWith("ensureWindow30DaysIfMissing(onDone)"))
+    fun ensureWindow32DaysIfMissing(onDone: (() -> Unit)? = null) = ensureWindow30DaysIfMissing(onDone)
+
+    @Deprecated("Use ensureWindow30DaysIfMissing()", ReplaceWith("ensureWindow30DaysIfMissing(onDone)"))
+    fun ensureWindow2MinutesIfMissing(onDone: (() -> Unit)? = null) = ensureWindow30DaysIfMissing(onDone)
+
+    @Deprecated("Use reset30Days()", ReplaceWith("reset30Days(onDone)"))
+    fun reset32Days(onDone: (() -> Unit)? = null) = reset30Days(onDone)
+
+    @Deprecated("Use reset30Days()", ReplaceWith("reset30Days(onDone)"))
+    fun reset2Minutes(onDone: (() -> Unit)? = null) = reset30Days(onDone)
+
+    private fun DataSnapshot.toStatusSafe(): Status = Status(
+        startAt  = long("startAt"),
+        endAt    = long("endAt"),
+        expired  = bool("expired"),
+        expiredAt = long("expiredAt"),
+        sealed   = bool("sealed"),
+        sealedAt = long("sealedAt")
+    )
+
+    private fun DataSnapshot.long(key: String): Long? {
+        val value = child(key).value ?: return null
+        return when (value) {
+            is Long   -> value
+            is Int    -> value.toLong()
+            is Double -> value.toLong()
+            is Float  -> value.toLong()
+            is String -> value.toLongOrNull()
+            else      -> null
+        }
+    }
+
+    private fun MutableData.longValue(): Long? {
+        val value = value ?: return null
+        return when (value) {
+            is Long   -> value
+            is Int    -> value.toLong()
+            is Double -> value.toLong()
+            is Float  -> value.toLong()
+            is String -> value.toLongOrNull()
+            else      -> null
+        }
+    }
+
+    private fun DataSnapshot.bool(key: String): Boolean? {
+        val value = child(key).value ?: return null
+        return when (value) {
+            is Boolean -> value
+            is String  -> value.equals("true", true) || value == "1"
+            is Number  -> value.toInt() != 0
+            else       -> null
+        }
+    }
+}

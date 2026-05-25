@@ -132,3 +132,9 @@ id = "N_s193f-0-jvBSirVTg4s"
 uri = "file://SupabaseApi_rewritten.zip"
 type = "unspecified"
 title = "SupabaseApi.kt — Clean rewrite matching real DB tables"
+
+[[outputs]]
+id = "dXHNVdoWXBudzIuvE-QRG"
+uri = "file://SupabaseApi_final.zip"
+type = "unspecified"
+title = "SupabaseApi.kt — DB structure fixed"
