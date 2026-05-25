@@ -37,46 +37,43 @@ export interface DeviceRow {
 export interface Stats {
   total_apps: number;
   active_apps: number;
+  expired_apps: number;
   total_devices: number;
   active_devices: number;
   recent_devices_7d: number;
 }
 
-export interface InitResult {
-  ok: boolean;
+export interface InitStatus {
   tables_exist: boolean;
   app_ids_error: string | null;
   devices_error: string | null;
-  sql_to_run: string | null;
 }
 
 export const api = {
-  init: () => req<InitResult>("/admin/init", { method: "POST" }),
+  initStatus: () => req<InitStatus>("/admin/init-status"),
+  createTables: () => req<{ ok: boolean; tables_exist: boolean; message: string }>("/admin/init", { method: "POST" }),
   stats: () => req<Stats>("/admin/stats"),
 
+  generateAppId: () => req<{ app_id: string }>("/admin/generate-app-id"),
+
   listAppIds: () => req<AppIdRow[]>("/admin/app-ids"),
-  createAppId: (body: { app_id: string; password: string; admin_label?: string; expires_at?: string }) =>
+  createAppId: (body: { app_id: string; password?: string; admin_label?: string }) =>
     req<AppIdRow>("/admin/app-ids", { method: "POST", body: JSON.stringify(body) }),
   changePassword: (appId: string, body: { current_password: string; new_password: string }) =>
-    req<{ ok: boolean; message: string }>(`/admin/app-ids/${appId}/password`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    }),
+    req<{ ok: boolean; message: string }>(`/admin/app-ids/${appId}/password`, { method: "PATCH", body: JSON.stringify(body) }),
+  resetPassword: (appId: string) =>
+    req<{ ok: boolean; message: string }>(`/admin/app-ids/${appId}/reset-password`, { method: "POST" }),
+  extendSession: (appId: string) =>
+    req<{ ok: boolean; expires_at: string }>(`/admin/app-ids/${appId}/extend`, { method: "POST" }),
   toggleAppId: (appId: string, is_active: boolean) =>
-    req<{ ok: boolean }>(`/admin/app-ids/${appId}/toggle`, {
-      method: "PATCH",
-      body: JSON.stringify({ is_active }),
-    }),
+    req<{ ok: boolean }>(`/admin/app-ids/${appId}/toggle`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
   deleteAppId: (appId: string) =>
     req<{ ok: boolean }>(`/admin/app-ids/${appId}`, { method: "DELETE" }),
 
   listDevices: (app_id?: string) =>
     req<DeviceRow[]>(`/admin/devices${app_id ? `?app_id=${encodeURIComponent(app_id)}` : ""}`),
   toggleDevice: (id: number, is_active: boolean) =>
-    req<{ ok: boolean }>(`/admin/devices/${id}/toggle`, {
-      method: "PATCH",
-      body: JSON.stringify({ is_active }),
-    }),
+    req<{ ok: boolean }>(`/admin/devices/${id}/toggle`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
   deleteDevice: (id: number) =>
     req<{ ok: boolean }>(`/admin/devices/${id}`, { method: "DELETE" }),
 };

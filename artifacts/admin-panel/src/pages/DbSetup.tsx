@@ -62,7 +62,7 @@ export default function DbSetup() {
 
   const { data: init, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["db-init"],
-    queryFn: api.init,
+    queryFn: api.initStatus,
     retry: false,
   });
 
