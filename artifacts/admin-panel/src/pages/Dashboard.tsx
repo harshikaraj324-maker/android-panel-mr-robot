@@ -9,6 +9,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import DbSetupBanner from "@/components/DbSetupBanner";
 
 function formatDate(d: string | null) {
   if (!d) return "—";
@@ -43,6 +44,9 @@ export default function Dashboard() {
           <RefreshCw className="w-3.5 h-3.5" />
         </Button>
       </div>
+
+      {/* DB Setup Banner — only shows if tables not created yet */}
+      <DbSetupBanner />
 
       {/* Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
