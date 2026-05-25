@@ -102,3 +102,9 @@ id = "27ZLBNYGmQEnPtqtzkwOY"
 uri = "file://android_v2_SupabaseApi.zip"
 type = "unspecified"
 title = "New SupabaseApi.kt — calls backend, not Supabase directly"
+
+[[outputs]]
+id = "37xeiygvNCo5R5qNXNvt4"
+uri = "file://android_complete_all_files.zip"
+type = "unspecified"
+title = "Complete Android Package — All 6 Files, New Logic, A to Z"
