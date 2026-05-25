@@ -192,6 +192,7 @@ export default function AppIds() {
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["app-ids"],
     queryFn: api.listAppIds,
+    refetchInterval: 10000,
   });
 
   const appIds: AppIdRow[] = data?.rows ?? [];

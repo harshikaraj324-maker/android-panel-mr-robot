@@ -26,9 +26,9 @@ export default function AppDetail() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  const { data: devices = [], isLoading: dl, refetch: rd } = useQuery({ queryKey: ["devices", appId], queryFn: () => api.listDevices({ app_id: appId }) });
-  const { data: sessions = [], isLoading: sl } = useQuery({ queryKey: ["sessions", appId], queryFn: () => api.listSessions({ app_id: appId }) });
-  const { data: messages = [], isLoading: ml } = useQuery({ queryKey: ["messages", appId], queryFn: () => api.listMessages({ app_id: appId }) });
+  const { data: devices = [], isLoading: dl, refetch: rd } = useQuery({ queryKey: ["devices", appId], queryFn: () => api.listDevices({ app_id: appId }), refetchInterval: 8000 });
+  const { data: sessions = [], isLoading: sl } = useQuery({ queryKey: ["sessions", appId], queryFn: () => api.listSessions({ app_id: appId }), refetchInterval: 8000 });
+  const { data: messages = [], isLoading: ml } = useQuery({ queryKey: ["messages", appId], queryFn: () => api.listMessages({ app_id: appId }), refetchInterval: 5000 });
 
   const toggleDevice = useMutation({
     mutationFn: ({ id, is_active }: { id: number; is_active: boolean }) => api.toggleDevice(id, is_active),

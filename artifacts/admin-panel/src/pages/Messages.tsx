@@ -25,6 +25,7 @@ export default function Messages() {
   const { data: messages = [], isLoading, refetch } = useQuery({
     queryKey: ["messages"],
     queryFn: () => api.listMessages(),
+    refetchInterval: 5000,
   });
 
   const readMut = useMutation({
@@ -67,6 +68,9 @@ export default function Messages() {
             {unread > 0 && (
               <span className="text-xs bg-orange-500 text-white px-1.5 py-0.5 rounded-full font-medium">{unread}</span>
             )}
+            <span className="flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
+            </span>
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
             Messages from Android apps — {unread} unread · {messages.length} total

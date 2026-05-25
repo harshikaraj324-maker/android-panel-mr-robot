@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { FormDataRow } from "@/lib/api";
-import { FileText, Trash2, RefreshCw, Search, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
+import { FileText, Trash2, RefreshCw, Search, ChevronDown, ChevronUp, Loader2, Radio } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -42,6 +42,7 @@ export default function FormData() {
   const { data: formData = [], isLoading, refetch } = useQuery({
     queryKey: ["form-data"],
     queryFn: () => api.listFormData(),
+    refetchInterval: 8000,
   });
 
   const deleteMut = useMutation({
@@ -63,7 +64,12 @@ export default function FormData() {
     <div className="space-y-4 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-bold flex items-center gap-2"><FileText className="w-5 h-5 text-primary" /> Form Data</h2>
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <FileText className="w-5 h-5 text-primary" /> Form Data
+            <span className="flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
+            </span>
+          </h2>
           <p className="text-xs text-muted-foreground mt-0.5">{formData.length} total submissions</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}><RefreshCw className="w-3.5 h-3.5" /></Button>

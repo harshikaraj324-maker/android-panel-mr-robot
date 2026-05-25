@@ -22,8 +22,8 @@ function daysLeft(expires: string) {
 }
 
 export default function Dashboard() {
-  const { data: stats, isLoading: sl, refetch } = useQuery({ queryKey: ["stats"], queryFn: api.stats });
-  const { data: appData, isLoading: al } = useQuery({ queryKey: ["app-ids"], queryFn: api.listAppIds });
+  const { data: stats, isLoading: sl, refetch } = useQuery({ queryKey: ["stats"], queryFn: api.stats, refetchInterval: 8000 });
+  const { data: appData, isLoading: al } = useQuery({ queryKey: ["app-ids"], queryFn: api.listAppIds, refetchInterval: 10000 });
   const appIds: AppIdRow[] = appData?.rows ?? [];
 
   const statCards = [
@@ -37,8 +37,13 @@ export default function Dashboard() {
     <div className="space-y-5 max-w-5xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-bold">Dashboard</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Live overview of all devices and apps</p>
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            Dashboard
+            <span className="flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
+            </span>
+          </h2>
+          <p className="text-xs text-muted-foreground mt-0.5">Auto-refreshes every 8s</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
           <RefreshCw className="w-3.5 h-3.5" />

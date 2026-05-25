@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { DeviceRow } from "@/lib/api";
-import { Search, Trash2, Smartphone, RefreshCw, Loader2 } from "lucide-react";
+import { Search, Trash2, Smartphone, RefreshCw, Loader2, Radio } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ export default function Devices() {
   const { data: devices = [], isLoading, refetch } = useQuery({
     queryKey: ["devices"],
     queryFn: () => api.listDevices(),
+    refetchInterval: 8000,
   });
 
   const toggleMut = useMutation({
@@ -62,7 +63,12 @@ export default function Devices() {
     <div className="space-y-4 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-bold flex items-center gap-2"><Smartphone className="w-5 h-5 text-primary" /> All Devices</h2>
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <Smartphone className="w-5 h-5 text-primary" /> All Devices
+            <span className="flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
+            </span>
+          </h2>
           <p className="text-xs text-muted-foreground mt-0.5">{devices.length} total devices across all App IDs</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}><RefreshCw className="w-3.5 h-3.5" /></Button>

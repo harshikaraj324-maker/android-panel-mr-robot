@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { SessionRow } from "@/lib/api";
-import { Clock, Trash2, RefreshCw, Search, ShieldOff, Loader2, MonitorSmartphone } from "lucide-react";
+import { Clock, Trash2, RefreshCw, Search, ShieldOff, Loader2, MonitorSmartphone, Radio } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,6 +24,7 @@ export default function Sessions() {
   const { data: sessions = [], isLoading, refetch } = useQuery({
     queryKey: ["sessions"],
     queryFn: () => api.listSessions(),
+    refetchInterval: 8000,
   });
 
   const invalidateMut = useMutation({
@@ -50,7 +51,12 @@ export default function Sessions() {
     <div className="space-y-4 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-bold flex items-center gap-2"><Clock className="w-5 h-5 text-primary" /> Sessions</h2>
+          <h2 className="text-lg font-bold flex items-center gap-2">
+            <Clock className="w-5 h-5 text-primary" /> Sessions
+            <span className="flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-100 dark:bg-green-900/30 dark:text-green-400 px-1.5 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
+            </span>
+          </h2>
           <p className="text-xs text-muted-foreground mt-0.5">{validCount} active · {sessions.length} total login sessions</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}><RefreshCw className="w-3.5 h-3.5" /></Button>
