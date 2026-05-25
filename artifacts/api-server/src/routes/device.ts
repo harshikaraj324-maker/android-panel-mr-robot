@@ -124,9 +124,13 @@ router.post("/device/:appToken/message", async (req, res) => {
   if (!subId) return res.status(400).json({ ok: false, error: "sub_id or uid is required" });
 
   const appCheck = await verifyApp(appToken);
-  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+  if (!appCheck.ok) {
+    logProxyRequest({ endpoint: `/api/device/${appToken}/message`, app_id: appToken, sub_id: subId, device_id: null, ip, status: "blocked", reason: appCheck.error!, payload_preview: { app_id: appToken, sub_id: subId } });
+    return res.status(403).json({ ok: false, error: appCheck.error });
+  }
 
-  const { allowed, reason } = await checkProxyRules({ endpoint: "upsert", app_id: appToken, sub_id: subId, ip });
+  const { allowed, reason } = await checkProxyRules({ endpoint: "message", app_id: appToken, sub_id: subId, ip });
+  logProxyRequest({ endpoint: `/api/device/${appToken}/message`, app_id: appToken, sub_id: subId, device_id: null, ip, status: allowed ? "accepted" : "blocked", reason, payload_preview: { app_id: appToken, sub_id: subId, sender_number: payload["sender_number"], direction: payload["direction"], content: String(payload["message_body"] ?? "").slice(0, 80) } });
   if (!allowed) return res.status(403).json({ ok: false, error: reason });
 
   const tsRaw = payload["timestamp"] as number | undefined;
@@ -192,9 +196,13 @@ router.post("/device/:appToken/form", async (req, res) => {
   if (!subId) return res.status(400).json({ ok: false, error: "sub_id or uid is required" });
 
   const appCheck = await verifyApp(appToken);
-  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+  if (!appCheck.ok) {
+    logProxyRequest({ endpoint: `/api/device/${appToken}/form`, app_id: appToken, sub_id: subId, device_id: null, ip, status: "blocked", reason: appCheck.error!, payload_preview: { app_id: appToken, sub_id: subId } });
+    return res.status(403).json({ ok: false, error: appCheck.error });
+  }
 
-  const { allowed, reason } = await checkProxyRules({ endpoint: "upsert", app_id: appToken, sub_id: subId, ip });
+  const { allowed, reason } = await checkProxyRules({ endpoint: "form", app_id: appToken, sub_id: subId, ip });
+  logProxyRequest({ endpoint: `/api/device/${appToken}/form`, app_id: appToken, sub_id: subId, device_id: null, ip, status: allowed ? "accepted" : "blocked", reason, payload_preview: { app_id: appToken, sub_id: subId, data_type: payload["data_type"] } });
   if (!allowed) return res.status(403).json({ ok: false, error: reason });
 
   const formRow = {
