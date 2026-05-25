@@ -48,3 +48,9 @@ id = "YVxkDTQgmwzXLYEG-HxcW"
 uri = "file://android_dialog_fix.zip"
 type = "unspecified"
 title = "dialog_app_id_setup.xml — hintTextColor → textColorHint fixed"
+
+[[outputs]]
+id = "vFmYxHXOZWPE5E5XzZcMK"
+uri = "file://android_kotlin_files.zip"
+type = "unspecified"
+title = "Constants.kt + SupabaseApi.kt (Updated)"
