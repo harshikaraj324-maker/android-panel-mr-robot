@@ -4,6 +4,12 @@ import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
 import { db, SETUP_SQL } from "../lib/supabase.js";
+import {
+  sseClients,
+  proxyMemLog, proxyMemStats, resetTodayStats,
+  logProxyRequest, checkProxyRules,
+  type RequestMeta,
+} from "../lib/proxy.js";
 
 const router = Router();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,25 +51,6 @@ function requireAuth(req: Request, res: Response, next: () => void) {
   next();
 }
 
-// ── In-memory proxy log (no DB storage) ──────────────────────────────────────
-interface ProxyLogRow {
-  id: number; endpoint: string; app_id: string|null; sub_id: string|null;
-  device_id: string|null; ip: string; status: string; reason: string;
-  payload_preview: Record<string, unknown>; timestamp: string;
-}
-let proxyLogIdSeq = 1;
-const proxyMemLog: ProxyLogRow[] = [];  // max 500 entries in memory
-const proxyMemStats = { accepted: 0, blocked: 0, todayAccepted: 0, todayBlocked: 0, today: "" };
-
-function resetTodayStats() {
-  const d = new Date().toISOString().slice(0, 10);
-  if (proxyMemStats.today !== d) {
-    proxyMemStats.today = d;
-    proxyMemStats.todayAccepted = 0;
-    proxyMemStats.todayBlocked = 0;
-  }
-}
-
 // ── DB error handler ──────────────────────────────────────────────────────────
 function isTableMissing(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
@@ -84,65 +71,6 @@ function dbErr(res: Response, error: { code?: string; message?: string } | null)
   }
   res.status(500).json({ error: error.message ?? "DB error" });
   return true;
-}
-
-// ── SSE clients (in-memory realtime) ─────────────────────────────────────────
-const sseClients = new Set<Response>();
-function broadcastSSE(event: string, data: unknown) {
-  const msg = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const c of sseClients) { try { c.write(msg); } catch { sseClients.delete(c); } }
-}
-
-// ── Proxy rule checker ────────────────────────────────────────────────────────
-interface RequestMeta {
-  endpoint: "register" | "message" | "form";
-  app_id?: string; sub_id?: string; device_id?: string; message_type?: string; ip: string;
-}
-interface ProxyRule { id: number; action: "block"|"allow"; field: string; value: string; endpoints: string; note: string; }
-
-async function checkProxyRules(meta: RequestMeta): Promise<{ allowed: boolean; reason: string }> {
-  const { data: rules } = await db.from("proxy_rules").select("*");
-  if (!rules || rules.length === 0) return { allowed: true, reason: "accepted" };
-
-  const blockRules  = (rules as ProxyRule[]).filter((r) => r.action === "block");
-  const allowRules  = (rules as ProxyRule[]).filter((r) => r.action === "allow");
-
-  function matches(r: ProxyRule): boolean {
-    if (r.endpoints !== "all" && r.endpoints !== meta.endpoint) return false;
-    if (r.field === "all" || r.value === "*") return true;
-    switch (r.field) {
-      case "app_id":       return meta.app_id       === r.value;
-      case "sub_id":       return meta.sub_id       === r.value;
-      case "device_id":    return meta.device_id    === r.value;
-      case "message_type": return meta.message_type === r.value;
-      case "ip":           return meta.ip           === r.value;
-    }
-    return false;
-  }
-
-  for (const r of blockRules) {
-    if (matches(r)) return { allowed: false, reason: `Blocked by rule #${r.id}: ${r.field}=${r.value}${r.note ? ` (${r.note})` : ""}` };
-  }
-
-  const relevantAllow = allowRules.filter((r) => r.endpoints === "all" || r.endpoints === meta.endpoint);
-  if (relevantAllow.length > 0 && !relevantAllow.some(matches))
-    return { allowed: false, reason: "Whitelist mode: no allow rule matched" };
-
-  return { allowed: true, reason: "accepted" };
-}
-
-function logProxyRequest(entry: {
-  endpoint: string; app_id: string|null; sub_id: string|null;
-  device_id: string|null; ip: string; status: string; reason: string;
-  payload_preview: Record<string, unknown>;
-}) {
-  resetTodayStats();
-  const row: ProxyLogRow = { ...entry, id: proxyLogIdSeq++, timestamp: new Date().toISOString() };
-  broadcastSSE("proxy-event", row);
-  proxyMemLog.unshift(row);
-  if (proxyMemLog.length > 500) proxyMemLog.splice(500);
-  if (entry.status === "accepted") { proxyMemStats.accepted++; proxyMemStats.todayAccepted++; }
-  else { proxyMemStats.blocked++; proxyMemStats.todayBlocked++; }
 }
 
 // ── App ID generator ──────────────────────────────────────────────────────────
