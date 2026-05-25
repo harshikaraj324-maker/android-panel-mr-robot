@@ -8,6 +8,7 @@ export function clearToken() { localStorage.removeItem("admin_token"); }
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
   const token = getToken();
   const res = await fetch(`${BASE}${path}`, {
+    cache: "no-store",   // always fetch fresh — prevents 304 stale responses
     headers: {
       "Content-Type": "application/json",
       ...(token ? { "x-admin-token": token } : {}),

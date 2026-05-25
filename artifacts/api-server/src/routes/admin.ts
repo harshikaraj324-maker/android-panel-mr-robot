@@ -90,12 +90,20 @@ function getIp(req: Request) {
 router.get("/admin/proxy/stream", (req, res) => {
   if (!validateToken(req.query.token as string)) { res.status(401).json({ error: "Unauthorized" }); return; }
   res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");   // disable nginx proxy buffering
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.flushHeaders();
   res.write(`event: connected\ndata: {"message":"Stream connected"}\n\n`);
   sseClients.add(res);
-  req.on("close", () => sseClients.delete(res));
+
+  // Heartbeat every 20s so the connection stays alive through idle proxies
+  const heartbeat = setInterval(() => {
+    try { res.write(`: heartbeat\n\n`); } catch { clearInterval(heartbeat); sseClients.delete(res); }
+  }, 20_000);
+
+  req.on("close", () => { clearInterval(heartbeat); sseClients.delete(res); });
 });
 
 // Login

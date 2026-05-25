@@ -54,6 +54,8 @@ export default function Proxy() {
   const [logFilter, setLogFilter] = useState<"all" | "accepted" | "blocked">("all");
   const [clearLogOpen, setClearLogOpen] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectDelay = useRef(1000);
   const liveContainerRef = useRef<HTMLDivElement | null>(null);
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -74,28 +76,47 @@ export default function Proxy() {
     onSuccess: () => { setLiveEntries([]); refetchLog(); refetchStats(); setClearLogOpen(false); toast({ title: "Log cleared" }); },
   });
 
-  // SSE connection
+  // SSE connection with auto-reconnect
   const connectSSE = useCallback(() => {
-    if (eventSourceRef.current) { eventSourceRef.current.close(); }
+    if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = null; }
+    if (eventSourceRef.current) { eventSourceRef.current.close(); eventSourceRef.current = null; }
+
     const token = getToken();
     if (!token) return;
 
-    const base = import.meta.env.BASE_URL.replace(/\/$/, "");
-    const es = new EventSource(`${base}/api/admin/proxy/stream?token=${token}`);
+    const base = window.location.origin;
+    const url = `${base}/api/admin/proxy/stream?token=${encodeURIComponent(token)}`;
+    const es = new EventSource(url);
     eventSourceRef.current = es;
 
-    es.addEventListener("connected", () => setConnected(true));
+    es.addEventListener("connected", () => {
+      setConnected(true);
+      reconnectDelay.current = 1000; // reset backoff on success
+    });
+
     es.addEventListener("proxy-event", (e) => {
       const entry = JSON.parse(e.data) as ProxyLogEntry;
       setLiveEntries((prev) => [entry, ...prev].slice(0, 200));
       if (liveContainerRef.current) liveContainerRef.current.scrollTop = 0;
     });
-    es.onerror = () => { setConnected(false); };
+
+    es.onerror = () => {
+      setConnected(false);
+      es.close();
+      eventSourceRef.current = null;
+      // Exponential backoff: 1s → 2s → 4s → 8s → max 30s
+      const delay = Math.min(reconnectDelay.current, 30_000);
+      reconnectDelay.current = Math.min(delay * 2, 30_000);
+      reconnectTimerRef.current = setTimeout(connectSSE, delay);
+    };
   }, []);
 
   useEffect(() => {
     connectSSE();
-    return () => { eventSourceRef.current?.close(); };
+    return () => {
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      eventSourceRef.current?.close();
+    };
   }, [connectSSE]);
 
   const displayedLog = liveEntries.length > 0 ? liveEntries : (logData?.entries ?? []);
