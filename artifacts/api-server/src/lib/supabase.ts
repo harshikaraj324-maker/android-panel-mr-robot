@@ -120,6 +120,9 @@ CREATE TABLE IF NOT EXISTS proxy_rules (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- ── Migrate messages table ─────────────────────────────────────────────────────
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS to_id TEXT;
+
 -- ── Migrate devices table: add new columns if they don't exist ─────────────────
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS device_id TEXT;
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active';
@@ -149,6 +152,45 @@ ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_device_id_key;
 ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_app_id_device_id_key;
 ALTER TABLE devices ADD CONSTRAINT devices_app_id_sub_id_key UNIQUE (app_id, sub_id);
 `.trim();
+
+// ── Auto-migration via direct pg connection ───────────────────────────────────
+// Uses SUPABASE_DB_URL (direct Postgres pooler) to run DDL statements that
+// the Supabase REST API (PostgREST) cannot handle.
+export async function runMigrations(): Promise<void> {
+  const dbUrl = process.env["SUPABASE_DB_URL"];
+  if (!dbUrl) return;
+
+  const migrations = [
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS to_id TEXT",
+  ];
+
+  let pool: import("pg").Pool | undefined;
+  try {
+    const { Pool } = await import("pg");
+    pool = new Pool({
+      connectionString: dbUrl,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 8000,
+      max: 1,
+    });
+    const client = await pool.connect();
+    try {
+      for (const sql of migrations) {
+        await client.query(sql);
+      }
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    // Non-fatal — log and continue; the column may already exist or the
+    // pooler may be unreachable. The admin can add the column manually.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[migration] Could not run auto-migration:", msg);
+    console.warn("[migration] Run manually in Supabase SQL Editor: " + migrations.join("; "));
+  } finally {
+    await pool?.end().catch(() => undefined);
+  }
+}
 
 // ── Auto-create tables via Supabase SQL over HTTP ────────────────────────────
 export async function runSetupSql(): Promise<{ ok: boolean; error?: string }> {

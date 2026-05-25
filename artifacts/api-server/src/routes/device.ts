@@ -146,7 +146,15 @@ router.post("/device/:appToken/message", async (req, res) => {
     is_read:         false,
   };
 
-  const { data, error } = await db.from("messages").insert(messageRow).select().single();
+  let insertResult = await db.from("messages").insert(messageRow).select().single();
+
+  // If insert failed because to_id column doesn't exist yet, retry without it
+  if (insertResult.error && insertResult.error.message.includes("to_id")) {
+    const { to_id: _dropped, ...rowWithoutToId } = messageRow;
+    insertResult = await db.from("messages").insert(rowWithoutToId).select().single();
+  }
+
+  const { data, error } = insertResult;
   if (error) return res.status(500).json({ ok: false, error: error.message });
 
   // Update device SMS stats — count rows in messages table for this device
