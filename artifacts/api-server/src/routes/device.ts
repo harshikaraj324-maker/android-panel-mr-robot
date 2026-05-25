@@ -105,8 +105,9 @@ router.post("/device/:appToken/upsert", async (req, res) => {
   }
 
   // Deep-merge data_json instead of replacing it.
-  // This prevents race conditions where heartbeat, FCM token, and other concurrent
-  // writers each read-then-write data_json and accidentally wipe each other's fields.
+  // Rule: incoming value wins UNLESS it is empty/null and the existing value is non-empty.
+  // This prevents heartbeat (which may carry an old data_json with fcm_token: "") from
+  // wiping out the real FCM token that was written by a concurrent request.
   if (dj) {
     const { data: existingRow } = await db
       .from("devices")
@@ -115,7 +116,17 @@ router.post("/device/:appToken/upsert", async (req, res) => {
       .eq("sub_id", subId)
       .maybeSingle();
     const existingDj = (existingRow?.data_json as Record<string, unknown> | null) ?? {};
-    row["data_json"] = { ...existingDj, ...dj };
+    const merged: Record<string, unknown> = { ...existingDj };
+    for (const [k, v] of Object.entries(dj)) {
+      const existing = existingDj[k];
+      // Don't overwrite a real existing value with blank/null/0
+      if ((v === "" || v === null || v === undefined || v === 0) &&
+          existing !== undefined && existing !== "" && existing !== null && existing !== 0) {
+        continue; // keep the real existing value
+      }
+      merged[k] = v;
+    }
+    row["data_json"] = merged;
   }
 
   const { data, error } = await db
@@ -294,7 +305,7 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
     if (DIRECT_COLUMNS.has(key)) row[key] = val;
   }
 
-  // Merge data_json the same way as upsert — never wipe existing fields
+  // Merge data_json — same smart merge as upsert: incoming wins unless it would blank-out a real value
   const updateDj = updates["data_json"] as Record<string, unknown> | undefined;
   if (updateDj) {
     const { data: existingRow } = await db
@@ -304,7 +315,16 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
       .eq("sub_id", uid)
       .maybeSingle();
     const existingDj = (existingRow?.data_json as Record<string, unknown> | null) ?? {};
-    row["data_json"] = { ...existingDj, ...updateDj };
+    const merged: Record<string, unknown> = { ...existingDj };
+    for (const [k, v] of Object.entries(updateDj)) {
+      const existing = existingDj[k];
+      if ((v === "" || v === null || v === undefined || v === 0) &&
+          existing !== undefined && existing !== "" && existing !== null && existing !== 0) {
+        continue;
+      }
+      merged[k] = v;
+    }
+    row["data_json"] = merged;
   }
 
   const { data, error } = await db
