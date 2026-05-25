@@ -432,6 +432,49 @@ class SupabaseApi() {
             }
         }
 
+    /**
+     * Load all SMS messages for all devices under this app token.
+     * Used by SMSActivity initial load (replaces old direct-Supabase call).
+     */
+    suspend fun getAllSmsMessagesFromRegisteredDevices(rowLimit: Int = 1000): Result<List<SmsLog>> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val url = "$BASE/messages?limit=$rowLimit"
+                Log.d(TAG, "getAllSmsMessagesFromRegisteredDevices → $url")
+                val arr = dataArray(get(url))
+                val list = mutableListOf<SmsLog>()
+                for (i in 0 until arr.length()) {
+                    parseSmsRow(arr.getJSONObject(i))?.let { list.add(it) }
+                }
+                Log.d(TAG, "getAllSmsMessagesFromRegisteredDevices → ${list.size} messages")
+                Result.success(list)
+            } catch (e: Exception) {
+                Log.e(TAG, "getAllSmsMessagesFromRegisteredDevices error: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * Delete ALL messages for this app token.
+     * Used by SMSActivity "Delete All" button.
+     */
+    suspend fun deleteAllSmsMessagesForApp(): Result<Unit> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val request = Request.Builder()
+                    .url("$BASE/messages")
+                    .delete()
+                    .build()
+                val resp = client.newCall(request).execute().use { it.body?.string() ?: "{}" }
+                val ok = JSONObject(resp).optBoolean("ok", false)
+                if (ok) Result.success(Unit)
+                else Result.failure(Exception(JSONObject(resp).optString("error", "Delete failed")))
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteAllSmsMessagesForApp error: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
     suspend fun deleteSmsLog(id: String): Result<Boolean> =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {

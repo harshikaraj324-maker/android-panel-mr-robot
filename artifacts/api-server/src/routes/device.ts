@@ -362,6 +362,23 @@ router.get("/device/:appToken/messages", async (req, res) => {
   return res.json({ ok: true, data: data ?? [] });
 });
 
+// ── DELETE /api/device/:appToken/messages ─────────────────────────────────────
+// Delete ALL messages for this app token (used by SMSActivity "Delete All")
+router.delete("/device/:appToken/messages", async (req, res) => {
+  const { appToken } = req.params;
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  const { error } = await db
+    .from("messages")
+    .delete()
+    .eq("app_id", appToken);
+
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true });
+});
+
 // ── GET /api/device/:appToken/form-data ───────────────────────────────────────
 // Returns form submissions for a device or all devices under this app token
 router.get("/device/:appToken/form-data", async (req, res) => {
