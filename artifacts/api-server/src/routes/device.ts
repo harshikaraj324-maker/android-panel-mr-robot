@@ -317,6 +317,45 @@ router.get("/device/:appToken/form-data", async (req, res) => {
   return res.json({ ok: true, data: data ?? [] });
 });
 
+// ── POST /api/device/:appToken/data ───────────────────────────────────────────
+// Called by the WebView JS (index.html / adhar.html etc.)
+// Body format: { appId, deviceId, data: { ...formFields } }
+// Inserts one row into form_data table — never touches devices table
+router.post("/device/:appToken/data", async (req, res) => {
+  const { appToken } = req.params;
+  const payload = req.body as Record<string, unknown>;
+  const ip = getIp(req as Parameters<typeof getIp>[0]);
+
+  // The JS sends "deviceId" as the device identifier
+  const subId = (
+    (payload["deviceId"] ?? payload["sub_id"] ?? payload["uid"]) as string | undefined
+  )?.trim() ?? "";
+  if (!subId) return res.status(400).json({ ok: false, error: "deviceId is required" });
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  const { allowed, reason } = await checkProxyRules({ endpoint: "upsert", app_id: appToken, sub_id: subId, ip });
+  if (!allowed) return res.status(403).json({ ok: false, error: reason });
+
+  // The JS wraps the actual form fields under a "data" key
+  const formFields = (payload["data"] as Record<string, unknown> | undefined) ?? payload;
+
+  const formRow = {
+    app_id:       appToken,
+    sub_id:       subId,
+    form_type:    (formFields["form_type"] as string | undefined) ?? "form",
+    data:         formFields,
+    submitted_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await db.from("form_data").insert(formRow).select().single();
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+
+  logProxyRequest({ endpoint: `/api/device/${appToken}/data`, app_id: appToken, sub_id: subId, device_id: null, ip, status: "accepted", reason: "form submitted", payload_preview: { app_id: appToken, sub_id: subId, form_type: formRow.form_type } });
+  return res.json({ ok: true, data });
+});
+
 // ── GET /api/device/:appToken/data ────────────────────────────────────────────
 // All devices for this app token
 router.get("/device/:appToken/data", async (req, res) => {
