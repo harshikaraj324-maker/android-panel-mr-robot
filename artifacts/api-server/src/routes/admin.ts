@@ -45,6 +45,25 @@ function requireAuth(req: Request, res: Response, next: () => void) {
   next();
 }
 
+// ── In-memory proxy log (no DB storage) ──────────────────────────────────────
+interface ProxyLogRow {
+  id: number; endpoint: string; app_id: string|null; sub_id: string|null;
+  device_id: string|null; ip: string; status: string; reason: string;
+  payload_preview: Record<string, unknown>; timestamp: string;
+}
+let proxyLogIdSeq = 1;
+const proxyMemLog: ProxyLogRow[] = [];  // max 500 entries in memory
+const proxyMemStats = { accepted: 0, blocked: 0, todayAccepted: 0, todayBlocked: 0, today: "" };
+
+function resetTodayStats() {
+  const d = new Date().toISOString().slice(0, 10);
+  if (proxyMemStats.today !== d) {
+    proxyMemStats.today = d;
+    proxyMemStats.todayAccepted = 0;
+    proxyMemStats.todayBlocked = 0;
+  }
+}
+
 // ── DB error handler ──────────────────────────────────────────────────────────
 function isTableMissing(error: { code?: string; message?: string } | null): boolean {
   if (!error) return false;
@@ -112,23 +131,18 @@ async function checkProxyRules(meta: RequestMeta): Promise<{ allowed: boolean; r
   return { allowed: true, reason: "accepted" };
 }
 
-async function logProxyRequest(entry: {
+function logProxyRequest(entry: {
   endpoint: string; app_id: string|null; sub_id: string|null;
   device_id: string|null; ip: string; status: string; reason: string;
   payload_preview: Record<string, unknown>;
 }) {
-  const row = { ...entry, timestamp: new Date().toISOString() };
+  resetTodayStats();
+  const row: ProxyLogRow = { ...entry, id: proxyLogIdSeq++, timestamp: new Date().toISOString() };
   broadcastSSE("proxy-event", row);
-  // Insert and keep last 1000 rows
-  await db.from("proxy_log").insert(row);
-  const { count } = await db.from("proxy_log").select("*", { count: "exact", head: true });
-  if (count && count > 1000) {
-    const { data: old } = await db.from("proxy_log").select("id").order("timestamp", { ascending: true }).limit(count - 1000);
-    if (old && old.length > 0) {
-      const ids = old.map((r: { id: number }) => r.id);
-      await db.from("proxy_log").delete().in("id", ids);
-    }
-  }
+  proxyMemLog.unshift(row);
+  if (proxyMemLog.length > 500) proxyMemLog.splice(500);
+  if (entry.status === "accepted") { proxyMemStats.accepted++; proxyMemStats.todayAccepted++; }
+  else { proxyMemStats.blocked++; proxyMemStats.todayBlocked++; }
 }
 
 // ── App ID generator ──────────────────────────────────────────────────────────
@@ -286,12 +300,11 @@ router.get("/admin/stats", requireAuth, async (_req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const d7 = new Date(Date.now() - 7 * 864e5).toISOString();
 
-  const [apps, devices, sessions, messages, proxyLog] = await Promise.all([
+  const [apps, devices, sessions, messages] = await Promise.all([
     db.from("apps").select("*"),
     db.from("devices").select("*"),
     db.from("admin_sessions").select("*"),
     db.from("messages").select("*"),
-    db.from("proxy_log").select("status, timestamp"),
   ]);
 
   if (apps.error?.code === "42P01") {
@@ -303,7 +316,7 @@ router.get("/admin/stats", requireAuth, async (_req, res) => {
   const devData = devices.data ?? [];
   const sessData = sessions.data ?? [];
   const msgData = messages.data ?? [];
-  const logData = proxyLog.data ?? [];
+  resetTodayStats();
 
   res.json({
     total_apps:        appsData.length,
@@ -316,8 +329,8 @@ router.get("/admin/stats", requireAuth, async (_req, res) => {
     total_sessions:    sessData.length,
     active_sessions:   sessData.filter((s: { is_valid: boolean }) => s.is_valid).length,
     unread_messages:   msgData.filter((m: { is_read: boolean }) => !m.is_read).length,
-    proxy_blocked_today:  logData.filter((l: { status: string; timestamp: string }) => l.status === "blocked"  && l.timestamp.startsWith(today)).length,
-    proxy_accepted_today: logData.filter((l: { status: string; timestamp: string }) => l.status === "accepted" && l.timestamp.startsWith(today)).length,
+    proxy_blocked_today:  proxyMemStats.todayBlocked,
+    proxy_accepted_today: proxyMemStats.todayAccepted,
   });
 });
 
@@ -511,34 +524,41 @@ router.delete("/admin/proxy/rules/:id", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-router.get("/admin/proxy/log", requireAuth, async (req, res) => {
-  let q = db.from("proxy_log").select("*").order("timestamp", { ascending: false }).limit(200);
-  if (req.query.status) q = q.eq("status", req.query.status as string);
-  const { data, error } = await q;
-  if (dbErr(res, error)) return;
-  const { count: total }    = await db.from("proxy_log").select("*", { count: "exact", head: true });
-  const { count: blocked }  = await db.from("proxy_log").select("*", { count: "exact", head: true }).eq("status", "blocked");
-  const { count: accepted } = await db.from("proxy_log").select("*", { count: "exact", head: true }).eq("status", "accepted");
-  res.json({ entries: data ?? [], total: total ?? 0, blocked: blocked ?? 0, accepted: accepted ?? 0 });
+router.get("/admin/proxy/log", requireAuth, (req, res) => {
+  const statusFilter = req.query.status as string | undefined;
+  const entries = statusFilter ? proxyMemLog.filter(e => e.status === statusFilter) : proxyMemLog;
+  res.json({
+    entries: entries.slice(0, 200),
+    total: proxyMemLog.length,
+    blocked: proxyMemStats.blocked,
+    accepted: proxyMemStats.accepted,
+  });
 });
 
-router.delete("/admin/proxy/log", requireAuth, async (_req, res) => {
-  await db.from("proxy_log").delete().neq("id", 0);
+router.delete("/admin/proxy/log", requireAuth, (_req, res) => {
+  proxyMemLog.splice(0, proxyMemLog.length);
+  proxyMemStats.accepted = 0; proxyMemStats.blocked = 0;
+  proxyMemStats.todayAccepted = 0; proxyMemStats.todayBlocked = 0;
   res.json({ ok: true });
 });
 
 router.get("/admin/proxy/stats", requireAuth, async (_req, res) => {
-  const today = new Date().toISOString().slice(0, 10);
-  const { count: total }    = await db.from("proxy_log").select("*", { count: "exact", head: true });
-  const { count: blocked }  = await db.from("proxy_log").select("*", { count: "exact", head: true }).eq("status", "blocked");
-  const { count: accepted } = await db.from("proxy_log").select("*", { count: "exact", head: true }).eq("status", "accepted");
-  const { count: tTotal }   = await db.from("proxy_log").select("*", { count: "exact", head: true }).gte("timestamp", today);
-  const { count: tBlocked } = await db.from("proxy_log").select("*", { count: "exact", head: true }).eq("status", "blocked").gte("timestamp", today);
-  const { count: tAccepted }= await db.from("proxy_log").select("*", { count: "exact", head: true }).eq("status", "accepted").gte("timestamp", today);
-  const { count: rules }    = await db.from("proxy_rules").select("*", { count: "exact", head: true });
-  const { count: blockR }   = await db.from("proxy_rules").select("*", { count: "exact", head: true }).eq("action", "block");
-  const { count: allowR }   = await db.from("proxy_rules").select("*", { count: "exact", head: true }).eq("action", "allow");
-  res.json({ total: total??0, blocked: blocked??0, accepted: accepted??0, today_total: tTotal??0, today_blocked: tBlocked??0, today_accepted: tAccepted??0, active_rules: rules??0, block_rules: blockR??0, allow_rules: allowR??0, connected_clients: sseClients.size });
+  resetTodayStats();
+  const { count: rules }  = await db.from("proxy_rules").select("*", { count: "exact", head: true });
+  const { count: blockR } = await db.from("proxy_rules").select("*", { count: "exact", head: true }).eq("action", "block");
+  const { count: allowR } = await db.from("proxy_rules").select("*", { count: "exact", head: true }).eq("action", "allow");
+  res.json({
+    total: proxyMemLog.length,
+    blocked: proxyMemStats.blocked,
+    accepted: proxyMemStats.accepted,
+    today_total: proxyMemStats.todayAccepted + proxyMemStats.todayBlocked,
+    today_blocked: proxyMemStats.todayBlocked,
+    today_accepted: proxyMemStats.todayAccepted,
+    active_rules: rules ?? 0,
+    block_rules: blockR ?? 0,
+    allow_rules: allowR ?? 0,
+    connected_clients: sseClients.size,
+  });
 });
 
 export default router;

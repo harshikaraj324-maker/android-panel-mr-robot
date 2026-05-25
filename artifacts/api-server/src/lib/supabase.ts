@@ -95,20 +95,6 @@ CREATE TABLE IF NOT EXISTS proxy_rules (
   note       TEXT        NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-
--- Proxy request log
-CREATE TABLE IF NOT EXISTS proxy_log (
-  id              BIGSERIAL PRIMARY KEY,
-  timestamp       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  endpoint        TEXT        NOT NULL,
-  app_id          TEXT,
-  sub_id          TEXT,
-  device_id       TEXT,
-  ip              TEXT        NOT NULL,
-  status          TEXT        NOT NULL,
-  reason          TEXT        NOT NULL,
-  payload_preview JSONB       NOT NULL DEFAULT '{}'
-);
 `.trim();
 
 // ── Auto-create tables via Supabase SQL over HTTP ────────────────────────────
