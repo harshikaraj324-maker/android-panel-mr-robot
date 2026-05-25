@@ -6,8 +6,11 @@ import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import AppIds from "@/pages/AppIds";
 import Devices from "@/pages/Devices";
+import Sessions from "@/pages/Sessions";
+import FormData from "@/pages/FormData";
+import Messages from "@/pages/Messages";
+import SettingsPage from "@/pages/SettingsPage";
 import AppDetail from "@/pages/AppDetail";
-import DbSetup from "@/pages/DbSetup";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient({
@@ -19,10 +22,14 @@ function Router() {
     <Layout>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/apps" component={AppIds} />
         <Route path="/app-ids" component={AppIds} />
         <Route path="/devices" component={Devices} />
+        <Route path="/sessions" component={Sessions} />
+        <Route path="/form-data" component={FormData} />
+        <Route path="/messages" component={Messages} />
+        <Route path="/settings" component={SettingsPage} />
         <Route path="/app/:appId" component={AppDetail} />
-        <Route path="/setup" component={DbSetup} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
