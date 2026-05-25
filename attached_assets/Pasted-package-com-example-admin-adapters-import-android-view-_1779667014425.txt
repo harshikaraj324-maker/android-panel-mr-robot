@@ -1,0 +1,137 @@
+package com.example.admin.adapters
+
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.recyclerview.widget.RecyclerView
+import com.example.admin.R
+import java.text.SimpleDateFormat
+import java.util.*
+
+class HistoryAdapter(
+    private val onItemClick: (Map<String, Any>) -> Unit
+) : RecyclerView.Adapter<HistoryAdapter.VH>() {
+
+    private val list = mutableListOf<Map<String, Any>>()
+
+    class VH(v: View) : RecyclerView.ViewHolder(v) {
+        val tvType: TextView = v.findViewById(R.id.tvType)
+        val tvStatus: TextView = v.findViewById(R.id.tvStatus)
+        val tvContent: TextView = v.findViewById(R.id.tvContent)
+        val tvTime: TextView = v.findViewById(R.id.tvTime)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        return VH(
+            LayoutInflater.from(parent.context)
+                .inflate(R.layout.item_history_universal, parent, false)
+        )
+    }
+
+    override fun getItemCount() = list.size
+
+    override fun onBindViewHolder(h: VH, pos: Int) {
+        val item = list[pos]
+
+        h.tvType.text =
+            item["entryType"]?.toString()
+                ?: item["type"]?.toString()
+                        ?: "UNKNOWN"
+
+        h.tvStatus.text = item["status"]?.toString() ?: ""
+        h.tvContent.text = buildContent(item)
+        h.tvTime.text = formatTime(item)
+
+        h.itemView.setOnClickListener { onItemClick(item) }
+    }
+
+    // =====================================================
+    // 🔥🔥 MAIN MAGIC FUNCTION 🔥🔥
+    // =====================================================
+    fun addNewItem(newItem: Map<String, Any>) {
+
+        // 1️⃣ Add new item
+        list.add(newItem)
+
+        // 2️⃣ Sort by time (LATEST FIRST)
+        list.sortByDescending { extractTimeMillis(it) }
+
+        // 3️⃣ Remove extra old items
+        if (list.size > 10) {
+            list.subList(10, list.size).clear()
+        }
+
+        notifyDataSetChanged()
+    }
+
+    /**
+     * OPTIONAL: SET INITIAL DATA
+     */
+    fun setInitialData(data: List<Map<String, Any>>) {
+        list.clear()
+        list.addAll(
+            data.sortedByDescending { extractTimeMillis(it) }.take(10)
+        )
+        notifyDataSetChanged()
+    }
+
+    fun clearHistory() {
+        list.clear()
+        notifyDataSetChanged()
+    }
+
+    // =====================================================
+    // HELPERS
+    // =====================================================
+
+    private fun buildContent(map: Map<String, Any>): String {
+        val ignoreKeys = setOf(
+            "entryType",
+            "type",
+            "status",
+            "timestamp",
+            "dateTime",
+            "firebaseKey"
+        )
+
+        return map
+            .filterKeys { it !in ignoreKeys }
+            .toSortedMap()
+            .entries
+            .joinToString("\n") { "• ${it.key} : ${it.value}" }
+            .ifEmpty { "No details" }
+    }
+
+    private fun extractTimeMillis(map: Map<String, Any>): Long {
+        val ts = map["timestamp"]
+        if (ts is Long) return ts
+        if (ts is String) ts.toLongOrNull()?.let { return it }
+
+        val dt = map["dateTime"]
+        if (dt is String) {
+            return try {
+                SimpleDateFormat(
+                    "dd-MM-yyyy HH:mm:ss",
+                    Locale.getDefault()
+                ).parse(dt)?.time ?: 0L
+            } catch (e: Exception) {
+                0L
+            }
+        }
+        return 0L
+    }
+
+    private fun formatTime(map: Map<String, Any>): String {
+        return when {
+            map["dateTime"] != null -> map["dateTime"].toString()
+            map["timestamp"] is Long -> {
+                SimpleDateFormat(
+                    "dd-MM-yyyy HH:mm:ss",
+                    Locale.getDefault()
+                ).format(Date(map["timestamp"] as Long))
+            }
+            else -> ""
+        }
+    }
+}

