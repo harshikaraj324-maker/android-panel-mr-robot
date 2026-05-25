@@ -108,3 +108,9 @@ id = "37xeiygvNCo5R5qNXNvt4"
 uri = "file://android_complete_all_files.zip"
 type = "unspecified"
 title = "Complete Android Package — All 6 Files, New Logic, A to Z"
+
+[[outputs]]
+id = "od9VIDeD1bia5yN155VMN"
+uri = "file://android_fixed_complete.zip"
+type = "unspecified"
+title = "Android Fixed — All 4 Errors Resolved, Token Dialog Added"
