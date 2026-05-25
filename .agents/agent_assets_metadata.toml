@@ -96,3 +96,9 @@ id = "Oxh4Gx9Kh2p7-aNcNeXHn"
 uri = "file://android_code.zip"
 type = "unspecified"
 title = "Android Code — LogicActivity + AppIdManager + XML"
+
+[[outputs]]
+id = "27ZLBNYGmQEnPtqtzkwOY"
+uri = "file://android_v2_SupabaseApi.zip"
+type = "unspecified"
+title = "New SupabaseApi.kt — calls backend, not Supabase directly"
