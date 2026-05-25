@@ -24,16 +24,16 @@ export default function DbSetupBanner() {
     mutationFn: () => api.runSetup(),
     onSuccess: (d) => {
       if (d.ok) {
-        toast({ title: "✅ Tables create ho gayi!", description: "Supabase mein sab tables ready hain." });
+        toast({ title: "Tables created successfully!", description: "All Supabase tables are ready." });
         qc.invalidateQueries({ queryKey: ["db-status"] });
         qc.invalidateQueries({ queryKey: ["stats"] });
         refetch();
       } else {
-        toast({ title: "Auto setup nahi hua", description: d.error ?? "Manual SQL run karo.", variant: "destructive" });
+        toast({ title: "Auto setup failed", description: d.error ?? "Please run the SQL manually.", variant: "destructive" });
         setShowSql(true);
       }
     },
-    onError: () => { setShowSql(true); toast({ title: "Manual SQL run karo neeche se", variant: "destructive" }); },
+    onError: () => { setShowSql(true); toast({ title: "Please run the SQL manually below.", variant: "destructive" }); },
   });
 
   function copySql() {
@@ -41,7 +41,7 @@ export default function DbSetupBanner() {
     navigator.clipboard.writeText(status.setup_sql);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    toast({ title: "✅ SQL copied!", description: "Ab Supabase SQL Editor mein paste karo." });
+    toast({ title: "SQL copied!", description: "Paste it into the Supabase SQL Editor and run it." });
   }
 
   if (isLoading) return null;
@@ -55,9 +55,9 @@ export default function DbSetupBanner() {
           <Database className="w-5 h-5 text-orange-600" />
         </div>
         <div className="flex-1">
-          <h3 className="font-bold text-orange-800 dark:text-orange-300">Supabase Tables Setup Required</h3>
+          <h3 className="font-bold text-orange-800 dark:text-orange-300">Database Setup Required</h3>
           <p className="text-sm text-orange-700 dark:text-orange-400 mt-0.5">
-            Pehli baar ke liye tables create karni hongi. Ek baar karo — phir sab automatic!
+            Tables need to be created once in your Supabase project before you can use the panel.
           </p>
         </div>
         <Button size="icon" variant="ghost" className="h-7 w-7 text-orange-600" onClick={() => refetch()}>
@@ -67,7 +67,7 @@ export default function DbSetupBanner() {
 
       {/* Step 1: Try Auto */}
       <div className="space-y-2">
-        <p className="text-xs font-semibold text-orange-700 dark:text-orange-400 uppercase tracking-wide">Step 1 — Auto Setup Try Karo</p>
+        <p className="text-xs font-semibold text-orange-700 dark:text-orange-400 uppercase tracking-wide">Step 1 — Try Auto Setup</p>
         <Button
           size="sm"
           className="bg-orange-600 hover:bg-orange-700 text-white"
@@ -79,20 +79,20 @@ export default function DbSetupBanner() {
             : <><Database className="w-3.5 h-3.5 mr-2" /> Auto-Create Tables</>}
         </Button>
         <p className="text-[10px] text-orange-600/70">
-          Agar yeh kaam kare to aur kuch nahi karna. Nahi hua toh Step 2 follow karo.
+          If this works, nothing else is needed. If it fails, follow Step 2.
         </p>
       </div>
 
       {/* Divider */}
       <div className="flex items-center gap-2">
         <div className="flex-1 border-t border-orange-200 dark:border-orange-800" />
-        <span className="text-[10px] text-orange-500 font-medium uppercase">ya</span>
+        <span className="text-[10px] text-orange-500 font-medium uppercase">or</span>
         <div className="flex-1 border-t border-orange-200 dark:border-orange-800" />
       </div>
 
       {/* Step 2: Manual */}
       <div className="space-y-2">
-        <p className="text-xs font-semibold text-orange-700 dark:text-orange-400 uppercase tracking-wide">Step 2 — Manual SQL Run Karo</p>
+        <p className="text-xs font-semibold text-orange-700 dark:text-orange-400 uppercase tracking-wide">Step 2 — Run SQL Manually</p>
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
@@ -100,7 +100,7 @@ export default function DbSetupBanner() {
             className="border-orange-300 text-orange-700 hover:bg-orange-100"
             onClick={() => window.open(SUPABASE_SQL_URL, "_blank")}
           >
-            <ExternalLink className="w-3.5 h-3.5 mr-2" /> Supabase SQL Editor Kholo
+            <ExternalLink className="w-3.5 h-3.5 mr-2" /> Open Supabase SQL Editor
           </Button>
           <Button
             size="sm"
@@ -110,7 +110,7 @@ export default function DbSetupBanner() {
           >
             {copied
               ? <><CheckCircle2 className="w-3.5 h-3.5 mr-2 text-green-600" /> Copied!</>
-              : <><Copy className="w-3.5 h-3.5 mr-2" /> SQL Copy Karo</>}
+              : <><Copy className="w-3.5 h-3.5 mr-2" /> Copy SQL</>}
           </Button>
           <Button
             size="sm"
@@ -122,7 +122,7 @@ export default function DbSetupBanner() {
           </Button>
         </div>
         <p className="text-[10px] text-orange-600/70">
-          SQL Editor kholo → SQL paste karo → Run karo → Wapas aao → ऊपर Refresh button dabaao
+          Open SQL Editor → Paste SQL → Run → Come back → Click Refresh above
         </p>
       </div>
 

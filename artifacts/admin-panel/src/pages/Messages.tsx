@@ -68,7 +68,7 @@ export default function Messages() {
             )}
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Android apps se aaye messages — {unread} unread · {messages.length} total
+            Messages from Android apps — {unread} unread · {messages.length} total
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
@@ -109,11 +109,11 @@ export default function Messages() {
             <div className="flex flex-col items-center py-16">
               <MessageSquare className="w-10 h-10 text-muted-foreground/30 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {messages.length === 0 ? "Koi message nahi hai abhi." : "Koi match nahi mila."}
+                {messages.length === 0 ? "No messages yet." : "No results match your filter."}
               </p>
               {messages.length === 0 && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Android app se messages aane par yahan dikhenge.
+                  Messages will appear here once received from Android apps.
                 </p>
               )}
             </div>
@@ -176,8 +176,8 @@ export default function Messages() {
       <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Message delete karna chahte ho?</AlertDialogTitle>
-            <AlertDialogDescription>Permanently remove ho jayega. Undo nahi hoga.</AlertDialogDescription>
+            <AlertDialogTitle>Delete this message?</AlertDialogTitle>
+            <AlertDialogDescription>This message will be permanently removed. This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>

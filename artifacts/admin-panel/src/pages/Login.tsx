@@ -43,7 +43,7 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
         <div className="bg-card border border-border rounded-xl p-6 shadow-sm">
           <h2 className="text-base font-semibold mb-1">Sign In</h2>
           <p className="text-xs text-muted-foreground mb-5">
-            Admin password dalo panel access karne ke liye
+            Enter your admin password to access the control panel
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -75,8 +75,8 @@ export default function Login({ onLogin }: { onLogin: () => void }) {
 
             <Button type="submit" className="w-full" disabled={!password || loginMut.isPending}>
               {loginMut.isPending
-                ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Logging in...</>
-                : "Login"}
+                ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Signing in...</>
+                : "Sign In"}
             </Button>
           </form>
         </div>

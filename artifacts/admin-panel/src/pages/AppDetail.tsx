@@ -104,7 +104,7 @@ export default function AppDetail() {
             ) : (devices as DeviceRow[]).length === 0 ? (
               <div className="flex flex-col items-center py-12">
                 <Smartphone className="w-10 h-10 text-muted-foreground/30 mb-3" />
-                <p className="text-sm text-muted-foreground">Koi device register nahi hai abhi.</p>
+                <p className="text-sm text-muted-foreground">No devices registered yet.</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
@@ -159,7 +159,7 @@ export default function AppDetail() {
             {sl ? (
               <div className="flex justify-center py-10"><div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>
             ) : (sessions as SessionRow[]).length === 0 ? (
-              <div className="flex flex-col items-center py-12"><Clock className="w-10 h-10 text-muted-foreground/30 mb-3" /><p className="text-sm text-muted-foreground">Koi session nahi hai.</p></div>
+              <div className="flex flex-col items-center py-12"><Clock className="w-10 h-10 text-muted-foreground/30 mb-3" /><p className="text-sm text-muted-foreground">No sessions yet.</p></div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -201,7 +201,7 @@ export default function AppDetail() {
           ) : (messages as MessageRow[]).length === 0 ? (
             <Card><CardContent className="flex flex-col items-center py-12">
               <MessageSquare className="w-10 h-10 text-muted-foreground/30 mb-3" />
-              <p className="text-sm text-muted-foreground">Is app ke liye koi message nahi hai.</p>
+              <p className="text-sm text-muted-foreground">No messages for this app yet.</p>
             </CardContent></Card>
           ) : (
             (messages as MessageRow[]).map((m) => (
@@ -229,8 +229,8 @@ export default function AppDetail() {
       <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Device delete karna chahte ho?</AlertDialogTitle>
-            <AlertDialogDescription>Permanently remove ho jayega. Undo nahi hoga.</AlertDialogDescription>
+            <AlertDialogTitle>Delete this device?</AlertDialogTitle>
+            <AlertDialogDescription>This device will be permanently removed. This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>

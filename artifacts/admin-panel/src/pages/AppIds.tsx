@@ -29,7 +29,7 @@ function SetupModal({ open, onClose, onDone }: {
   const setupMut = useMutation({
     mutationFn: () => api.setup(pat),
     onSuccess: () => {
-      toast({ title: "✅ Database Ready!", description: "Tables create ho gayi. Ab App ID ban rahi hai..." });
+      toast({ title: "Database Ready!", description: "Tables created. Creating App ID now..." });
       qc.invalidateQueries({ queryKey: ["app-ids"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
       onDone();
@@ -42,19 +42,19 @@ function SetupModal({ open, onClose, onDone }: {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-amber-500" /> Ek Baar Setup Karo
+            <ShieldAlert className="w-4 h-4 text-amber-500" /> One-Time Setup Required
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4 text-sm">
           <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md p-3">
             <p className="font-medium text-amber-800 dark:text-amber-400 text-xs">
-              Supabase mein tables abhi nahi hain — sirf ek baar Supabase Access Token do, tables auto-ban jayengi aur App ID bhi create ho jayega!
+              Supabase tables don't exist yet. Provide a Supabase Access Token once and tables will be created automatically along with your App ID.
             </p>
           </div>
 
           <div className="space-y-2">
-            <p className="font-semibold">Step 1 — Token generate karo:</p>
+            <p className="font-semibold">Step 1 — Generate a token:</p>
             <a
               href="https://supabase.com/dashboard/account/tokens"
               target="_blank"
@@ -65,12 +65,12 @@ function SetupModal({ open, onClose, onDone }: {
               supabase.com/dashboard/account/tokens → "Generate new token"
             </a>
             <p className="text-[11px] text-muted-foreground">
-              (Yeh SQL editor nahi hai — sirf Account Settings hai. Token copy karo.)
+              (This is Account Settings, not the SQL editor. Copy the token.)
             </p>
           </div>
 
           <div className="space-y-2">
-            <p className="font-semibold">Step 2 — Token paste karo:</p>
+            <p className="font-semibold">Step 2 — Paste token here:</p>
             <div className="relative">
               <Input
                 type={showPat ? "text" : "password"}
@@ -89,7 +89,7 @@ function SetupModal({ open, onClose, onDone }: {
               </button>
             </div>
             <p className="text-[11px] text-muted-foreground">
-              Token store ho jayega — dobara nahi maangega ✓
+              Token will be stored — you won't be asked again ✓
             </p>
           </div>
         </div>
@@ -103,7 +103,7 @@ function SetupModal({ open, onClose, onDone }: {
             {setupMut.isPending ? (
               <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Creating...</>
             ) : (
-              <><ArrowRight className="w-4 h-4 mr-1.5" /> Tables Banao + App ID Create</>
+              <><ArrowRight className="w-4 h-4 mr-1.5" /> Create Tables + App ID</>
             )}
           </Button>
         </DialogFooter>
@@ -140,7 +140,7 @@ function ChangePinDialog({ appId, onClose }: { appId: string; onClose: () => voi
   const mut = useMutation({
     mutationFn: () => api.changePin(appId, newPin),
     onSuccess: () => {
-      toast({ title: "PIN Change Ho Gaya!" });
+      toast({ title: "PIN updated successfully!" });
       qc.invalidateQueries({ queryKey: ["app-ids"] });
       onClose();
     },
@@ -152,13 +152,13 @@ function ChangePinDialog({ appId, onClose }: { appId: string; onClose: () => voi
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <KeyRound className="w-4 h-4 text-primary" /> PIN Change Karo
+            <KeyRound className="w-4 h-4 text-primary" /> Change PIN
           </DialogTitle>
           <p className="text-xs font-mono text-muted-foreground">{appId}</p>
         </DialogHeader>
         <div className="space-y-3">
           <Input
-            placeholder="Naya PIN dalo (e.g. 5678)"
+            placeholder="New PIN (e.g. 5678)"
             value={newPin}
             onChange={(e) => setNewPin(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && newPin && mut.mutate()}
@@ -214,7 +214,7 @@ export default function AppIds() {
     onSuccess: (row) => {
       qc.invalidateQueries({ queryKey: ["app-ids"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
-      toast({ title: "App ID Create Ho Gaya! 🎉", description: `${row.app_id} · PIN: 1234 · 30 days valid` });
+      toast({ title: "App ID Created!", description: `${row.app_id} · PIN: 1234 · 30 days valid` });
       setShowCreate(false);
       setGeneratedId("");
       setAppName("");
@@ -236,7 +236,7 @@ export default function AppIds() {
     mutationFn: (appId: string) => api.resetPin(appId),
     onSuccess: (_, appId) => {
       qc.invalidateQueries({ queryKey: ["app-ids"] });
-      toast({ title: "PIN Reset Ho Gaya!", description: `"${appId}" ka PIN wapas 1234 ho gaya.` });
+      toast({ title: "PIN Reset!", description: `"${appId}" PIN has been reset to 1234.` });
     },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
@@ -246,7 +246,7 @@ export default function AppIds() {
     mutationFn: (appId: string) => api.extendSession(appId),
     onSuccess: (_, appId) => {
       qc.invalidateQueries({ queryKey: ["app-ids"] });
-      toast({ title: "+30 Days!", description: `"${appId}" ka session extend ho gaya.` });
+      toast({ title: "+30 Days Added!", description: `"${appId}" session has been extended.` });
     },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
@@ -263,7 +263,7 @@ export default function AppIds() {
     onSuccess: (_, appId) => {
       qc.invalidateQueries({ queryKey: ["app-ids"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
-      toast({ title: "Deleted", description: `"${appId}" aur uske devices delete ho gaye.` });
+      toast({ title: "Deleted", description: `"${appId}" and all its devices have been removed.` });
       setDeleteFor(null);
     },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
@@ -331,10 +331,10 @@ export default function AppIds() {
         <Card className="border-dashed">
           <CardContent className="py-12 text-center">
             <KeyRound className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
-            <p className="text-sm font-medium text-muted-foreground">Koi App ID nahi hai abhi</p>
-            <p className="text-xs text-muted-foreground mt-1">Upar "New App ID" click karo — auto-generate hoga</p>
+            <p className="text-sm font-medium text-muted-foreground">No App IDs yet</p>
+            <p className="text-xs text-muted-foreground mt-1">Click "New App ID" above — it will be auto-generated</p>
             <Button size="sm" className="mt-4" onClick={openCreate}>
-              <Plus className="w-4 h-4 mr-1.5" /> Pehla App ID Banao
+              <Plus className="w-4 h-4 mr-1.5" /> Create First App ID
             </Button>
           </CardContent>
         </Card>
@@ -391,7 +391,7 @@ export default function AppIds() {
                       </Link>
                       <Button size="sm" variant="outline" className="h-7 text-xs"
                         onClick={() => setChangePinFor(app.app_id)}>
-                        <KeyRound className="w-3 h-3 mr-1" /> PIN Change
+                        <KeyRound className="w-3 h-3 mr-1" /> Change PIN
                       </Button>
                       <Button size="sm" variant="outline" className="h-7 text-xs"
                         onClick={() => resetMut.mutate(app.app_id)}
@@ -428,7 +428,7 @@ export default function AppIds() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <Wand2 className="w-4 h-4 text-primary" /> New App ID Generate Karo
+              <Wand2 className="w-4 h-4 text-primary" /> Generate New App ID
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
@@ -493,9 +493,9 @@ export default function AppIds() {
       <AlertDialog open={!!deleteFor} onOpenChange={(o) => !o && setDeleteFor(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>"{deleteFor}" delete karna chahte ho?</AlertDialogTitle>
+            <AlertDialogTitle>Delete "{deleteFor}"?</AlertDialogTitle>
             <AlertDialogDescription>
-              Is App ID ke <strong>saare devices bhi delete</strong> ho jayenge. Undo nahi hoga.
+              This will permanently delete this App ID and <strong>all associated devices</strong>. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -503,7 +503,7 @@ export default function AppIds() {
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => deleteFor && deleteMut.mutate(deleteFor)}>
-              Haan, Delete Karo
+              Yes, Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

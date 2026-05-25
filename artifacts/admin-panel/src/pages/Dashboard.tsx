@@ -30,7 +30,7 @@ export default function Dashboard() {
     { label: "Total Apps", value: stats?.total_apps ?? 0, sub: `${stats?.active_apps ?? 0} active`, icon: KeyRound, color: "text-primary", bg: "bg-primary/10" },
     { label: "Devices", value: stats?.total_devices ?? 0, sub: `${stats?.active_devices ?? 0} active`, icon: Smartphone, color: "text-green-600", bg: "bg-green-100 dark:bg-green-900/20" },
     { label: "Live Sessions", value: stats?.active_sessions ?? 0, sub: `${stats?.total_sessions ?? 0} total`, icon: Activity, color: "text-blue-600", bg: "bg-blue-100 dark:bg-blue-900/20" },
-    { label: "Unread Msgs", value: stats?.unread_messages ?? 0, sub: "messages inbox", icon: MessageSquare, color: "text-orange-600", bg: "bg-orange-100 dark:bg-orange-900/20" },
+    { label: "Unread Messages", value: stats?.unread_messages ?? 0, sub: "in inbox", icon: MessageSquare, color: "text-orange-600", bg: "bg-orange-100 dark:bg-orange-900/20" },
   ];
 
   return (
@@ -38,7 +38,7 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold">Dashboard</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">Sab kuch ek jagah — live overview</p>
+          <p className="text-xs text-muted-foreground mt-0.5">Live overview of all devices and apps</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
           <RefreshCw className="w-3.5 h-3.5" />
@@ -82,8 +82,8 @@ export default function Dashboard() {
           ) : appIds.length === 0 ? (
             <div className="py-10 text-center">
               <KeyRound className="w-8 h-8 text-muted-foreground/30 mx-auto mb-2" />
-              <p className="text-sm text-muted-foreground">Koi App ID nahi hai.</p>
-              <Link href="/apps" className="text-xs text-primary mt-1 inline-block hover:underline">Pehla App ID banao →</Link>
+              <p className="text-sm text-muted-foreground">No App IDs yet.</p>
+              <Link href="/apps" className="text-xs text-primary mt-1 inline-block hover:underline">Create your first App ID →</Link>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -148,7 +148,7 @@ export default function Dashboard() {
       {/* Quick links */}
       <div className="grid grid-cols-3 gap-3">
         {[
-          { href: "/sessions", label: "Sessions", icon: Clock, sub: "Active logins dekho" },
+          { href: "/sessions", label: "Sessions", icon: Clock, sub: "View active logins" },
           { href: "/form-data", label: "Form Data", icon: TrendingUp, sub: "Submitted forms" },
           { href: "/messages", label: "Messages", icon: MessageSquare, sub: "User messages" },
         ].map(({ href, label, icon: Icon, sub }) => (

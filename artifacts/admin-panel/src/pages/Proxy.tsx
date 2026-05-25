@@ -60,7 +60,7 @@ function AddRuleForm({ onAdded }: { onAdded: () => void }) {
 
   const addMut = useMutation({
     mutationFn: () => api.addProxyRule({ action, field, value: value.trim(), endpoints, note }),
-    onSuccess: () => { setValue(""); setNote(""); onAdded(); toast({ title: `Rule added — ${action === "block" ? "🚫 Block" : "✅ Allow"} rule set` }); },
+    onSuccess: () => { setValue(""); setNote(""); onAdded(); toast({ title: `Rule added — ${action === "block" ? "Block" : "Allow"} rule set` }); },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
 
@@ -83,8 +83,8 @@ function AddRuleForm({ onAdded }: { onAdded: () => void }) {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="block">🚫 Block (blacklist)</SelectItem>
-              <SelectItem value="allow">✅ Allow only (whitelist)</SelectItem>
+              <SelectItem value="block">Block (blacklist)</SelectItem>
+              <SelectItem value="allow">Allow only (whitelist)</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -135,18 +135,18 @@ function AddRuleForm({ onAdded }: { onAdded: () => void }) {
 
       <div>
         <label className="text-xs font-medium text-muted-foreground mb-1 block">Note (optional)</label>
-        <Input className="h-8 text-xs" placeholder="Kyon block kar rahe ho..." value={note} onChange={(e) => setNote(e.target.value)} />
+        <Input className="h-8 text-xs" placeholder="Reason for this rule..." value={note} onChange={(e) => setNote(e.target.value)} />
       </div>
 
       <Button size="sm" className="w-full" onClick={() => addMut.mutate()}
         disabled={!value.trim() && field !== "all" || addMut.isPending}>
         <Plus className="w-3.5 h-3.5 mr-1.5" />
-        {action === "block" ? "Block Rule Add Karo" : "Allow Rule Add Karo"}
+        {action === "block" ? "Add Block Rule" : "Add Allow Rule"}
       </Button>
 
       <div className="text-[10px] text-muted-foreground bg-muted/40 rounded p-2 leading-relaxed">
-        <strong>Block:</strong> Matching requests ko reject kar do (403) &nbsp;|&nbsp;
-        <strong>Allow:</strong> Sirf matching requests ko hi accept karo (baaki sab block)
+        <strong>Block:</strong> Reject matching requests (403) &nbsp;|&nbsp;
+        <strong>Allow:</strong> Accept only matching requests (block everything else)
         <br />Use <strong>*</strong> to match any value.
       </div>
     </div>
@@ -205,7 +205,6 @@ export default function Proxy() {
     es.addEventListener("proxy-event", (e) => {
       const entry = JSON.parse(e.data) as ProxyLogEntry;
       setLiveEntries((prev) => [entry, ...prev].slice(0, 200));
-      // Auto-scroll to top
       if (liveContainerRef.current) liveContainerRef.current.scrollTop = 0;
     });
     es.onerror = () => { setConnected(false); };
@@ -228,7 +227,7 @@ export default function Proxy() {
             <Shield className="w-5 h-5 text-primary" /> Proxy Gateway
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Android apps ka data yahan se guzarta hai — real-time accept/block karo
+            All Android app traffic passes through here — accept or block requests in real time
           </p>
         </div>
         <div className={cn("flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full border", connected ? "border-green-300 text-green-700 bg-green-50 dark:bg-green-950/20 dark:text-green-400" : "border-muted text-muted-foreground")}>
@@ -348,10 +347,10 @@ export default function Proxy() {
                   <div className="flex flex-col items-center justify-center h-full">
                     <Activity className="w-8 h-8 text-muted-foreground/20 mb-2" />
                     <p className="text-xs text-muted-foreground">
-                      {connected ? "Android apps se koi request nahi aayi abhi..." : "Stream disconnect hai"}
+                      {connected ? "No requests received yet..." : "Stream disconnected"}
                     </p>
                     <p className="text-[10px] text-muted-foreground mt-1">
-                      Yahan real-time data aata rahega jaise Android app request karega
+                      Real-time data will appear here as Android apps make requests
                     </p>
                   </div>
                 ) : (
@@ -367,8 +366,8 @@ export default function Proxy() {
       <AlertDialog open={deleteRuleId !== null} onOpenChange={(o) => !o && setDeleteRuleId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Rule delete karna chahte ho?</AlertDialogTitle>
-            <AlertDialogDescription>Yeh rule hata diya jayega. Undo nahi hoga.</AlertDialogDescription>
+            <AlertDialogTitle>Delete this rule?</AlertDialogTitle>
+            <AlertDialogDescription>This rule will be permanently removed. This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -382,8 +381,8 @@ export default function Proxy() {
       <AlertDialog open={clearLogOpen} onOpenChange={setClearLogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Pura log clear karna chahte ho?</AlertDialogTitle>
-            <AlertDialogDescription>Sab {logData?.total ?? 0} entries delete ho jayenge.</AlertDialogDescription>
+            <AlertDialogTitle>Clear entire log?</AlertDialogTitle>
+            <AlertDialogDescription>All {logData?.total ?? 0} entries will be permanently deleted.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>

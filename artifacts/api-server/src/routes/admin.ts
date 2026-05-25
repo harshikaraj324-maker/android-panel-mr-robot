@@ -60,7 +60,7 @@ function isTableMissing(error: { code?: string; message?: string } | null): bool
 function dbErr(res: Response, error: { code?: string; message?: string } | null) {
   if (!error) return false;
   if (isTableMissing(error)) {
-    res.status(503).json({ error: "Tables not created yet — Dashboard mein Setup banao.", needs_setup: true });
+    res.status(503).json({ error: "Database tables not set up yet. Please run the setup from the Dashboard.", needs_setup: true });
     return true;
   }
   res.status(500).json({ error: error.message ?? "DB error" });

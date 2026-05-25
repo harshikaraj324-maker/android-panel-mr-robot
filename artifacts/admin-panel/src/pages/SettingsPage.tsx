@@ -18,14 +18,14 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
 
   const changeMut = useMutation({
     mutationFn: () => {
-      if (newPw !== confirmPw) throw new Error("New passwords match nahi kar rahe");
-      if (newPw.length < 4) throw new Error("Password kam se kam 4 characters ka hona chahiye");
+      if (newPw !== confirmPw) throw new Error("New passwords do not match");
+      if (newPw.length < 4) throw new Error("Password must be at least 4 characters");
       return api.changePassword(oldPw, newPw);
     },
     onSuccess: () => {
       setChanged(true);
       setOldPw(""); setNewPw(""); setConfirmPw("");
-      toast({ title: "✅ Password change ho gaya!", description: "Dobara login karo naye password se." });
+      toast({ title: "Password changed!", description: "Please log in again with your new password." });
       setTimeout(() => {
         clearToken();
         onLogout();
@@ -53,18 +53,18 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
       <Card>
         <CardHeader className="pb-3 pt-5 px-5">
           <CardTitle className="text-sm font-semibold flex items-center gap-2">
-            <Lock className="w-4 h-4 text-primary" /> Admin Password Change Karo
+            <Lock className="w-4 h-4 text-primary" /> Change Admin Password
           </CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
-            Yeh control panel ka password hai — Android app ka PIN alag hota hai
+            This is the control panel password — separate from the Android app PIN
           </p>
         </CardHeader>
         <CardContent className="px-5 pb-5">
           {changed ? (
             <div className="flex flex-col items-center py-6 gap-2">
               <CheckCircle2 className="w-10 h-10 text-green-500" />
-              <p className="text-sm font-medium text-green-600">Password change ho gaya!</p>
-              <p className="text-xs text-muted-foreground">Wapas login page pe ja rahe hain...</p>
+              <p className="text-sm font-medium text-green-600">Password changed successfully!</p>
+              <p className="text-xs text-muted-foreground">Redirecting to login page...</p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -73,7 +73,7 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
                 <div className="relative">
                   <Input
                     type={showOld ? "text" : "password"}
-                    placeholder="Purana password"
+                    placeholder="Current password"
                     value={oldPw}
                     onChange={(e) => setOldPw(e.target.value)}
                     className="pr-10"
@@ -90,7 +90,7 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
                 <div className="relative">
                   <Input
                     type={showNew ? "text" : "password"}
-                    placeholder="Naya password (min 4 chars)"
+                    placeholder="New password (min 4 chars)"
                     value={newPw}
                     onChange={(e) => setNewPw(e.target.value)}
                     className="pr-10"
@@ -106,14 +106,14 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
                 <label className="text-sm font-medium">Confirm New Password</label>
                 <Input
                   type="password"
-                  placeholder="Naya password dobara dalo"
+                  placeholder="Repeat new password"
                   value={confirmPw}
                   onChange={(e) => setConfirmPw(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && oldPw && newPw && confirmPw && changeMut.mutate()}
                   className={confirmPw && confirmPw !== newPw ? "border-red-400" : ""}
                 />
                 {confirmPw && confirmPw !== newPw && (
-                  <p className="text-[11px] text-red-500">Passwords match nahi kar rahe</p>
+                  <p className="text-[11px] text-red-500">Passwords do not match</p>
                 )}
               </div>
 
@@ -124,7 +124,7 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
               >
                 {changeMut.isPending
                   ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Changing...</>
-                  : <><Lock className="w-4 h-4 mr-2" /> Password Change Karo</>}
+                  : <><Lock className="w-4 h-4 mr-2" /> Change Password</>}
               </Button>
             </div>
           )}
@@ -144,7 +144,7 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
             <span className="font-mono">dvgcrxrnnezbdjpujjjt</span>
           </div>
           <div className="flex justify-between text-xs">
-            <span className="text-muted-foreground">Default Admin PW</span>
+            <span className="text-muted-foreground">Default Admin Password</span>
             <span className="font-mono">admin1234</span>
           </div>
           <div className="flex justify-between text-xs">
@@ -157,7 +157,7 @@ export default function SettingsPage({ onLogout }: { onLogout: () => void }) {
       {/* Logout */}
       <Button variant="outline" className="w-full text-destructive hover:text-destructive hover:bg-destructive/5 border-destructive/30"
         onClick={handleLogout}>
-        <LogOut className="w-4 h-4 mr-2" /> Logout
+        <LogOut className="w-4 h-4 mr-2" /> Sign Out
       </Button>
     </div>
   );

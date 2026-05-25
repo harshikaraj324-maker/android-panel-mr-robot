@@ -35,7 +35,7 @@ export default function DbSetup() {
       return d;
     },
     onSuccess: () => {
-      toast({ title: "✅ Tables Create Ho Gayi!", description: "Ab App IDs banana start karo!" });
+      toast({ title: "Tables created successfully!", description: "You can now create App IDs." });
       qc.invalidateQueries({ queryKey: ["db-init"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
       qc.invalidateQueries({ queryKey: ["app-ids"] });
@@ -52,7 +52,9 @@ export default function DbSetup() {
       <div>
         <h2 className="text-lg font-bold text-foreground">Database Setup</h2>
         <p className="text-xs text-muted-foreground mt-0.5">
-          {tablesOk ? "Sab ready hai — App IDs banana shuru karo!" : "Sirf ek baar karna hai — phir sab kuch panel se auto-manage hoga"}
+          {tablesOk
+            ? "Everything is ready — go ahead and create App IDs!"
+            : "One-time setup required — after this everything is managed automatically"}
         </p>
       </div>
 
@@ -71,12 +73,12 @@ export default function DbSetup() {
                   : <XCircle className="w-6 h-6 text-destructive flex-shrink-0" />}
                 <div>
                   <p className="text-sm font-semibold">
-                    {tablesOk ? "Database Ready Hai! 🎉" : "Tables abhi nahi hain"}
+                    {tablesOk ? "Database is ready!" : "Tables not found"}
                   </p>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {tablesOk
-                      ? "app_ids + registered_devices — dono tables exist karti hain"
-                      : "Neeche Supabase Access Token daalo — tables auto-bana do"}
+                      ? "All required tables exist in your Supabase project"
+                      : "Paste a Supabase Access Token below to create them automatically"}
                   </p>
                 </div>
               </div>
@@ -93,10 +95,10 @@ export default function DbSetup() {
         <Card className="border-primary/30">
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold flex items-center gap-2">
-              <Wand2 className="w-4 h-4 text-primary" /> Auto Setup — Sirf 2 Steps
+              <Wand2 className="w-4 h-4 text-primary" /> Auto Setup — 2 Steps
             </CardTitle>
             <CardDescription className="text-xs">
-              SQL editor khulne ki zaroorat nahi — bas ek token paste karo, baaki sab automatic
+              No need to open the SQL editor — just paste a token and tables are created automatically
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -104,9 +106,9 @@ export default function DbSetup() {
             <div className="flex gap-3">
               <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">1</span>
               <div className="flex-1">
-                <p className="text-sm font-medium">Supabase Access Token generate karo</p>
+                <p className="text-sm font-medium">Generate a Supabase Access Token</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Supabase Account Settings kholo → "Access Tokens" → "Generate new token"
+                  Open Supabase Account Settings → "Access Tokens" → "Generate new token"
                 </p>
                 <a
                   href="https://supabase.com/dashboard/account/tokens"
@@ -118,7 +120,7 @@ export default function DbSetup() {
                   supabase.com/dashboard/account/tokens
                 </a>
                 <p className="text-[11px] text-muted-foreground mt-1.5 bg-muted px-2 py-1 rounded">
-                  💡 Yeh SQL editor nahi hai — sirf Account Settings ka ek token hai. Copy karo aur neeche paste karo.
+                  This is your Account Settings token, not the SQL editor. Copy it and paste below.
                 </p>
               </div>
             </div>
@@ -127,7 +129,7 @@ export default function DbSetup() {
             <div className="flex gap-3">
               <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
               <div className="flex-1">
-                <p className="text-sm font-medium">Token yahan paste karo → Auto Setup!</p>
+                <p className="text-sm font-medium">Paste your token here → Auto Setup</p>
                 <div className="flex gap-2 mt-2">
                   <div className="relative flex-1">
                     <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -156,12 +158,12 @@ export default function DbSetup() {
                     {setupMut.isPending ? (
                       <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Setting up...</>
                     ) : (
-                      <><ArrowRight className="w-4 h-4 mr-1.5" /> Setup Karo</>
+                      <><ArrowRight className="w-4 h-4 mr-1.5" /> Run Setup</>
                     )}
                   </Button>
                 </div>
                 <p className="text-[11px] text-muted-foreground mt-1.5">
-                  Token sirf table banane ke liye use hoga — store nahi hoga, ek baar ka kaam hai ✓
+                  Token is used only for table creation — it is not stored after this one-time setup ✓
                 </p>
               </div>
             </div>
@@ -178,7 +180,7 @@ export default function DbSetup() {
               <div>
                 <p className="text-sm font-semibold text-green-700 dark:text-green-400">Database fully ready!</p>
                 <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
-                  "App IDs & Login" page pe jao aur pehla App ID banao 🚀
+                  Go to "App IDs &amp; Login" and create your first App ID.
                 </p>
               </div>
             </div>
@@ -188,11 +190,16 @@ export default function DbSetup() {
 
       {/* Info box */}
       <div className="rounded-md border border-dashed p-4 space-y-1.5">
-        <p className="text-xs font-semibold text-muted-foreground">Kya create hoga?</p>
+        <p className="text-xs font-semibold text-muted-foreground">Tables that will be created:</p>
         <div className="space-y-1">
           {[
-            ["app_ids", "App IDs, passwords, 30-day sessions"],
-            ["registered_devices", "Android devices jo register honge"],
+            ["apps", "App IDs, PINs, 30-day sessions"],
+            ["devices", "Android devices registered via the app"],
+            ["admin_sessions", "Device login sessions"],
+            ["messages", "Messages sent from Android devices"],
+            ["form_data", "Form submissions from Android devices"],
+            ["proxy_rules", "Proxy accept/block rules"],
+            ["proxy_log", "Real-time proxy request log"],
           ].map(([table, desc]) => (
             <div key={table} className="flex items-center gap-2">
               <Database className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />

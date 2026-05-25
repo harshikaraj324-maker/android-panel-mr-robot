@@ -79,7 +79,7 @@ export default function Sessions() {
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center py-16">
               <Clock className="w-10 h-10 text-muted-foreground/30 mb-3" />
-              <p className="text-sm text-muted-foreground">{sessions.length === 0 ? "Koi session nahi hai abhi." : "Koi match nahi."}</p>
+              <p className="text-sm text-muted-foreground">{sessions.length === 0 ? "No sessions yet." : "No results match your filter."}</p>
             </div>
           ) : (
             <div className="overflow-x-auto">

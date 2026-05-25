@@ -97,8 +97,8 @@ export default function FormData() {
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center py-16">
               <FileText className="w-10 h-10 text-muted-foreground/30 mb-3" />
-              <p className="text-sm text-muted-foreground">{formData.length === 0 ? "Koi form submission nahi hai abhi." : "Koi match nahi mila."}</p>
-              <p className="text-xs text-muted-foreground mt-1">Android app se forms submit hone par yahan dikhenge.</p>
+              <p className="text-sm text-muted-foreground">{formData.length === 0 ? "No form submissions yet." : "No results match your filter."}</p>
+              <p className="text-xs text-muted-foreground mt-1">Submissions will appear here once forms are submitted from the Android app.</p>
             </div>
           ) : (
             <div className="overflow-x-auto">

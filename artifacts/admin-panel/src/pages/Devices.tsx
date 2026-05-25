@@ -90,10 +90,10 @@ export default function Devices() {
             <div className="flex flex-col items-center py-16">
               <Smartphone className="w-10 h-10 text-muted-foreground/30 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {devices.length === 0 ? "Abhi koi device register nahi hai." : "Koi device filter se match nahi kiya."}
+                {devices.length === 0 ? "No devices registered yet." : "No devices match your filter."}
               </p>
               {devices.length === 0 && (
-                <p className="text-xs text-muted-foreground mt-1">Android app se register hone par devices yahan dikhenge.</p>
+                <p className="text-xs text-muted-foreground mt-1">Devices will appear here once registered from the Android app.</p>
               )}
             </div>
           ) : (
@@ -142,8 +142,8 @@ export default function Devices() {
       <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Device delete karna chahte ho?</AlertDialogTitle>
-            <AlertDialogDescription>Permanently remove ho jayega. Undo nahi hoga.</AlertDialogDescription>
+            <AlertDialogTitle>Delete this device?</AlertDialogTitle>
+            <AlertDialogDescription>This device will be permanently removed. This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
