@@ -1,28 +1,24 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import type { MessageRow, AppIdRow } from "@/lib/api";
-import { MessageSquare, Trash2, RefreshCw, Search, Send, CheckCheck, Loader2 } from "lucide-react";
+import type { MessageRow } from "@/lib/api";
+import { MessageSquare, Trash2, RefreshCw, Search, CheckCheck, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
 function fmt(d: string) {
-  return new Date(d).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return new Date(d).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 export default function Messages() {
   const [search, setSearch] = useState("");
   const [appFilter, setAppFilter] = useState("all");
-  const [showSend, setShowSend] = useState(false);
-  const [sendAppId, setSendAppId] = useState("");
-  const [sendSubId, setSendSubId] = useState("");
-  const [sendContent, setSendContent] = useState("");
+  const [deleteId, setDeleteId] = useState<number | null>(null);
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -30,8 +26,6 @@ export default function Messages() {
     queryKey: ["messages"],
     queryFn: () => api.listMessages(),
   });
-  const { data: appData } = useQuery({ queryKey: ["app-ids"], queryFn: api.listAppIds });
-  const appIds: AppIdRow[] = appData?.rows ?? [];
 
   const readMut = useMutation({
     mutationFn: (id: number) => api.markRead(id),
@@ -40,17 +34,12 @@ export default function Messages() {
 
   const deleteMut = useMutation({
     mutationFn: (id: number) => api.deleteMessage(id),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["messages"] }); qc.invalidateQueries({ queryKey: ["stats"] }); },
-  });
-
-  const sendMut = useMutation({
-    mutationFn: () => api.sendMessage({ app_id: sendAppId, sub_id: sendSubId || undefined, content: sendContent, message_type: "admin" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["messages"] });
-      toast({ title: "Message bhej diya! ✅" });
-      setShowSend(false); setSendContent(""); setSendSubId("");
+      qc.invalidateQueries({ queryKey: ["stats"] });
+      toast({ title: "Deleted" });
+      setDeleteId(null);
     },
-    onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
 
   const allAppIds = Array.from(new Set((messages as MessageRow[]).map((m) => m.app_id)));
@@ -59,32 +48,49 @@ export default function Messages() {
   const filtered = (messages as MessageRow[]).filter((m) => {
     const matchApp = appFilter === "all" || m.app_id === appFilter;
     const q = search.toLowerCase();
-    return matchApp && (!q || m.app_id.toLowerCase().includes(q) || m.content.toLowerCase().includes(q) || (m.sub_id ?? "").toLowerCase().includes(q));
+    return matchApp && (!q ||
+      m.app_id.toLowerCase().includes(q) ||
+      (m.sub_id ?? "").toLowerCase().includes(q) ||
+      (m.from_id ?? "").toLowerCase().includes(q) ||
+      m.content.toLowerCase().includes(q) ||
+      m.message_type.toLowerCase().includes(q)
+    );
   });
 
   return (
-    <div className="space-y-4 max-w-5xl mx-auto">
+    <div className="space-y-4 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-bold flex items-center gap-2">
             <MessageSquare className="w-5 h-5 text-primary" /> Messages
-            {unread > 0 && <span className="text-xs bg-orange-500 text-white px-1.5 py-0.5 rounded-full font-medium">{unread}</span>}
+            {unread > 0 && (
+              <span className="text-xs bg-orange-500 text-white px-1.5 py-0.5 rounded-full font-medium">{unread}</span>
+            )}
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">{unread} unread · {messages.length} total</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Android apps se aaye messages — {unread} unread · {messages.length} total
+          </p>
         </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => refetch()}><RefreshCw className="w-3.5 h-3.5" /></Button>
-          <Button size="sm" onClick={() => setShowSend(true)}><Send className="w-4 h-4 mr-1.5" /> Send Message</Button>
-        </div>
+        <Button size="sm" variant="outline" onClick={() => refetch()}>
+          <RefreshCw className="w-3.5 h-3.5" />
+        </Button>
       </div>
 
+      {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-          <Input placeholder="Search messages..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-8 h-8 text-sm" />
+          <Input
+            placeholder="App ID, Sub ID, From ID, content..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-8 h-8 text-sm"
+          />
         </div>
         <Select value={appFilter} onValueChange={setAppFilter}>
-          <SelectTrigger className="w-full sm:w-44 h-8 text-sm"><SelectValue placeholder="Filter by App" /></SelectTrigger>
+          <SelectTrigger className="w-full sm:w-44 h-8 text-sm">
+            <SelectValue placeholder="Filter by App" />
+          </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Apps</SelectItem>
             {allAppIds.map((id) => <SelectItem key={id} value={id}>{id}</SelectItem>)}
@@ -92,83 +98,94 @@ export default function Messages() {
         </Select>
       </div>
 
-      <div className="space-y-2">
-        {isLoading ? (
-          <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-primary" /></div>
-        ) : filtered.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center py-16">
+      {/* Table */}
+      <Card>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="flex justify-center py-16">
+              <Loader2 className="w-6 h-6 animate-spin text-primary" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="flex flex-col items-center py-16">
               <MessageSquare className="w-10 h-10 text-muted-foreground/30 mb-3" />
-              <p className="text-sm text-muted-foreground">{messages.length === 0 ? "Koi message nahi hai abhi." : "Koi match nahi mila."}</p>
-              <Button size="sm" className="mt-4" onClick={() => setShowSend(true)}><Send className="w-3.5 h-3.5 mr-1.5" /> Pehla Message Bhejo</Button>
-            </CardContent>
-          </Card>
-        ) : (
-          filtered.map((m) => (
-            <Card key={m.id} className={cn("transition-all", !m.is_read && "border-primary/30 bg-primary/3")}>
-              <CardContent className="p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap mb-1">
-                      {!m.is_read && <span className="w-2 h-2 rounded-full bg-orange-500 flex-shrink-0" />}
-                      <span className="font-mono text-xs font-bold text-primary">{m.app_id}</span>
-                      {m.sub_id && <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground font-mono">sub: {m.sub_id}</span>}
-                      <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground capitalize">{m.message_type}</span>
-                      <span className="text-[10px] text-muted-foreground ml-auto">{fmt(m.sent_at)}</span>
-                    </div>
-                    <p className="text-sm text-foreground leading-relaxed">{m.content}</p>
-                    {m.from_id && <p className="text-[10px] text-muted-foreground mt-1">From: {m.from_id}</p>}
-                  </div>
-                  <div className="flex items-center gap-1 flex-shrink-0">
-                    {!m.is_read && (
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-green-500" title="Mark Read"
-                        onClick={() => readMut.mutate(m.id)}>
-                        <CheckCheck className="w-3.5 h-3.5" />
-                      </Button>
-                    )}
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      onClick={() => deleteMut.mutate(m.id)}>
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))
-        )}
-      </div>
+              <p className="text-sm text-muted-foreground">
+                {messages.length === 0 ? "Koi message nahi hai abhi." : "Koi match nahi mila."}
+              </p>
+              {messages.length === 0 && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Android app se messages aane par yahan dikhenge.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40">
+                    {["ID", "App ID", "Sub ID", "From ID", "Message Type", "Content", "Sent At", ""].map((h, i) => (
+                      <th key={i} className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {filtered.map((m) => (
+                    <tr key={m.id} className={cn("hover:bg-muted/30 transition-colors", !m.is_read && "bg-orange-50/50 dark:bg-orange-950/10")}>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono">
+                        <span className="flex items-center gap-1">
+                          {!m.is_read && <span className="w-1.5 h-1.5 rounded-full bg-orange-500 flex-shrink-0" />}
+                          {m.id}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5">
+                        <span className="font-mono text-xs font-bold text-primary">{m.app_id}</span>
+                      </td>
+                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.sub_id ?? "—"}</td>
+                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.from_id ?? "—"}</td>
+                      <td className="px-4 py-2.5">
+                        <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">
+                          {m.message_type}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs max-w-[200px]">
+                        <p className="truncate" title={m.content}>{m.content}</p>
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">{fmt(m.sent_at)}</td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center gap-0.5">
+                          {!m.is_read && (
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-green-500" title="Mark as read"
+                              onClick={() => readMut.mutate(m.id)}>
+                              <CheckCheck className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            onClick={() => setDeleteId(m.id)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
-      {/* Send Message Dialog */}
-      <Dialog open={showSend} onOpenChange={(o) => !o && setShowSend(false)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader><DialogTitle className="flex items-center gap-2"><Send className="w-4 h-4 text-primary" /> Message Bhejo</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">App ID <span className="text-red-500">*</span></label>
-              <Select value={sendAppId} onValueChange={setSendAppId}>
-                <SelectTrigger className="text-sm"><SelectValue placeholder="App ID select karo" /></SelectTrigger>
-                <SelectContent>
-                  {appIds.map((a) => <SelectItem key={a.app_id} value={a.app_id}>{a.app_id}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Sub ID <span className="text-muted-foreground font-normal text-xs">(optional)</span></label>
-              <Input placeholder="Specific user Sub ID" value={sendSubId} onChange={(e) => setSendSubId(e.target.value)} />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium">Message <span className="text-red-500">*</span></label>
-              <Textarea placeholder="Message likhो..." value={sendContent} onChange={(e) => setSendContent(e.target.value)} rows={3} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setShowSend(false)}>Cancel</Button>
-            <Button onClick={() => sendMut.mutate()} disabled={!sendAppId || !sendContent || sendMut.isPending}>
-              {sendMut.isPending ? <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Sending...</> : <><Send className="w-4 h-4 mr-1.5" /> Send</>}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <AlertDialog open={deleteId !== null} onOpenChange={(o) => !o && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Message delete karna chahte ho?</AlertDialogTitle>
+            <AlertDialogDescription>Permanently remove ho jayega. Undo nahi hoga.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => deleteId && deleteMut.mutate(deleteId)}>Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -1,7 +1,24 @@
 const BASE = "/api";
 
+// Token management
+export function getToken(): string | null { return localStorage.getItem("admin_token"); }
+export function setToken(t: string) { localStorage.setItem("admin_token", t); }
+export function clearToken() { localStorage.removeItem("admin_token"); }
+
 async function req<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: { "Content-Type": "application/json" }, ...options });
+  const token = getToken();
+  const res = await fetch(`${BASE}${path}`, {
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "x-admin-token": token } : {}),
+    },
+    ...options,
+  });
+  if (res.status === 401) {
+    clearToken();
+    window.location.reload();
+    throw new Error("Unauthorized");
+  }
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? data.message ?? `HTTP ${res.status}`);
   return data as T;
@@ -38,8 +55,6 @@ export interface MessageRow {
   sent_at: string; is_read: boolean;
 }
 
-export interface SettingRow { id: number; app_id: string; key: string; value: string; updated_at: string; }
-
 export interface Stats {
   total_apps: number; active_apps: number; inactive_apps: number; expired_apps: number;
   total_devices: number; active_devices: number; recent_devices_7d: number;
@@ -47,10 +62,15 @@ export interface Stats {
 }
 
 export const api = {
+  login: (password: string) =>
+    req<{ token: string }>("/admin/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () => req<{ ok: boolean }>("/admin/logout", { method: "POST" }),
+  changePassword: (old_password: string, new_password: string) =>
+    req<{ ok: boolean }>("/admin/change-password", { method: "POST", body: JSON.stringify({ old_password, new_password }) }),
+
   stats: () => req<Stats>("/admin/stats"),
   generateAppId: () => req<{ app_id: string }>("/admin/generate-app-id"),
 
-  // Apps
   listAppIds: () => req<AppIdListResponse>("/admin/app-ids"),
   createAppId: (body: { app_id: string; pin?: string; name?: string }) =>
     req<AppIdRow>("/admin/app-ids", { method: "POST", body: JSON.stringify(body) }),
@@ -65,45 +85,40 @@ export const api = {
   deleteAppId: (appId: string) =>
     req<{ ok: boolean }>(`/admin/app-ids/${appId}`, { method: "DELETE" }),
 
-  // Devices
   listDevices: (filters?: { app_id?: string; sub_id?: string }) => {
-    const p = new URLSearchParams(); if (filters?.app_id) p.set("app_id", filters.app_id); if (filters?.sub_id) p.set("sub_id", filters.sub_id);
+    const p = new URLSearchParams();
+    if (filters?.app_id) p.set("app_id", filters.app_id);
+    if (filters?.sub_id) p.set("sub_id", filters.sub_id);
     return req<DeviceRow[]>(`/admin/devices${p.toString() ? `?${p}` : ""}`);
   },
-  createDevice: (body: Partial<DeviceRow>) => req<DeviceRow>("/admin/devices", { method: "POST", body: JSON.stringify(body) }),
   toggleDevice: (id: number, is_active: boolean) =>
     req<{ ok: boolean }>(`/admin/devices/${id}/toggle`, { method: "PATCH", body: JSON.stringify({ is_active }) }),
   deleteDevice: (id: number) => req<{ ok: boolean }>(`/admin/devices/${id}`, { method: "DELETE" }),
 
-  // Sessions
   listSessions: (filters?: { app_id?: string; sub_id?: string }) => {
-    const p = new URLSearchParams(); if (filters?.app_id) p.set("app_id", filters.app_id); if (filters?.sub_id) p.set("sub_id", filters.sub_id);
+    const p = new URLSearchParams();
+    if (filters?.app_id) p.set("app_id", filters.app_id);
+    if (filters?.sub_id) p.set("sub_id", filters.sub_id);
     return req<SessionRow[]>(`/admin/sessions${p.toString() ? `?${p}` : ""}`);
   },
   invalidateSession: (id: number) => req<{ ok: boolean }>(`/admin/sessions/${id}/invalidate`, { method: "POST" }),
   deleteSession: (id: number) => req<{ ok: boolean }>(`/admin/sessions/${id}`, { method: "DELETE" }),
   deleteAllSessions: (appId: string) => req<{ ok: boolean }>(`/admin/sessions/app/${appId}/all`, { method: "DELETE" }),
 
-  // Form Data
-  listFormData: (filters?: { app_id?: string; sub_id?: string; form_type?: string }) => {
-    const p = new URLSearchParams(); if (filters?.app_id) p.set("app_id", filters.app_id); if (filters?.sub_id) p.set("sub_id", filters.sub_id); if (filters?.form_type) p.set("form_type", filters.form_type);
+  listFormData: (filters?: { app_id?: string; sub_id?: string }) => {
+    const p = new URLSearchParams();
+    if (filters?.app_id) p.set("app_id", filters.app_id);
+    if (filters?.sub_id) p.set("sub_id", filters.sub_id);
     return req<FormDataRow[]>(`/admin/form-data${p.toString() ? `?${p}` : ""}`);
   },
   deleteFormData: (id: number) => req<{ ok: boolean }>(`/admin/form-data/${id}`, { method: "DELETE" }),
 
-  // Messages
   listMessages: (filters?: { app_id?: string; sub_id?: string }) => {
-    const p = new URLSearchParams(); if (filters?.app_id) p.set("app_id", filters.app_id); if (filters?.sub_id) p.set("sub_id", filters.sub_id);
+    const p = new URLSearchParams();
+    if (filters?.app_id) p.set("app_id", filters.app_id);
+    if (filters?.sub_id) p.set("sub_id", filters.sub_id);
     return req<MessageRow[]>(`/admin/messages${p.toString() ? `?${p}` : ""}`);
   },
-  sendMessage: (body: { app_id: string; sub_id?: string; content: string; message_type?: string }) =>
-    req<MessageRow>("/admin/messages", { method: "POST", body: JSON.stringify(body) }),
   markRead: (id: number) => req<{ ok: boolean }>(`/admin/messages/${id}/read`, { method: "PATCH" }),
   deleteMessage: (id: number) => req<{ ok: boolean }>(`/admin/messages/${id}`, { method: "DELETE" }),
-
-  // Settings
-  listSettings: (app_id?: string) => req<SettingRow[]>(`/admin/settings${app_id ? `?app_id=${encodeURIComponent(app_id)}` : ""}`),
-  saveSetting: (app_id: string, key: string, value: string) =>
-    req<{ ok: boolean }>("/admin/settings", { method: "PUT", body: JSON.stringify({ app_id, key, value }) }),
-  deleteSetting: (id: number) => req<{ ok: boolean }>(`/admin/settings/${id}`, { method: "DELETE" }),
 };

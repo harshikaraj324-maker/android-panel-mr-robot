@@ -1,10 +1,12 @@
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Smartphone, KeyRound, Menu, X, Shield,
-  MonitorSmartphone, FileText, MessageSquare, Settings, Clock,
+  MonitorSmartphone, FileText, MessageSquare, Settings, Clock, LogOut,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
+import { useMutation } from "@tanstack/react-query";
+import { api, clearToken } from "@/lib/api";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -16,9 +18,14 @@ const navItems = [
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
-export default function Layout({ children }: { children: React.ReactNode }) {
+export default function Layout({ children, onLogout }: { children: React.ReactNode; onLogout: () => void }) {
   const [location] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const logoutMut = useMutation({
+    mutationFn: async () => { try { await api.logout(); } catch {} clearToken(); },
+    onSuccess: () => onLogout(),
+  });
 
   const activeNav = navItems.find((n) =>
     n.href === "/" ? location === "/" : location.startsWith(n.href)
@@ -65,10 +72,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        <div className="px-4 py-3 border-t border-sidebar-border">
-          <div className="flex items-center gap-1.5">
-            <MonitorSmartphone className="w-3 h-3 text-sidebar-foreground/30" />
-            <p className="text-[10px] text-sidebar-foreground/30 font-mono truncate">dvgcrxrnnezbdjpujjjt</p>
+        {/* Logout */}
+        <div className="px-2 py-2 border-t border-sidebar-border">
+          <button
+            onClick={() => logoutMut.mutate()}
+            disabled={logoutMut.isPending}
+            className="flex items-center gap-2.5 px-3 py-2 w-full rounded-md text-sm font-medium text-sidebar-foreground/50 hover:bg-sidebar-accent hover:text-destructive transition-colors"
+          >
+            <LogOut className="w-4 h-4 flex-shrink-0" />
+            Logout
+          </button>
+          <div className="flex items-center gap-1.5 px-3 pt-2 pb-1">
+            <MonitorSmartphone className="w-3 h-3 text-sidebar-foreground/20" />
+            <p className="text-[9px] text-sidebar-foreground/25 font-mono truncate">dvgcrxrnnezbdjpujjjt</p>
           </div>
         </div>
       </aside>
