@@ -1,182 +1,207 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Database, CheckCircle2, XCircle, Copy, Check, RefreshCw } from "lucide-react";
+import {
+  Database, CheckCircle2, XCircle, RefreshCw,
+  Wand2, ExternalLink, KeyRound, ArrowRight, Loader2,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 
-const SQL = `-- Step 1: App IDs table (login/password ke liye)
-CREATE TABLE IF NOT EXISTS app_ids (
-  id bigint generated always as identity primary key,
-  app_id text not null unique,
-  password_hash text not null,
-  salt text not null,
-  admin_label text,
-  created_at timestamptz default now(),
-  expires_at timestamptz,
-  is_active boolean default true
-);
-
--- Step 2: Registered Devices table (Android app data)
-CREATE TABLE IF NOT EXISTS registered_devices (
-  id bigint generated always as identity primary key,
-  app_id text not null,
-  device_id text not null,
-  device_name text,
-  device_model text,
-  android_version text,
-  registered_at timestamptz default now(),
-  is_active boolean default true,
-  last_seen timestamptz,
-  admin_id text
-);
-
--- Step 3: Row Level Security enable karo
-ALTER TABLE app_ids ENABLE ROW LEVEL SECURITY;
-ALTER TABLE registered_devices ENABLE ROW LEVEL SECURITY;
-
--- Step 4: Policies (service_role = full access, anon = devices read/write)
-CREATE POLICY "service_role_all_app_ids" ON app_ids
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-
-CREATE POLICY "service_role_all_devices" ON registered_devices
-  FOR ALL TO service_role USING (true) WITH CHECK (true);
-
-CREATE POLICY "anon_read_devices" ON registered_devices
-  FOR SELECT TO anon USING (true);
-
-CREATE POLICY "anon_write_devices" ON registered_devices
-  FOR INSERT TO anon WITH CHECK (true);
-
-CREATE POLICY "anon_update_devices" ON registered_devices
-  FOR UPDATE TO anon USING (true);
-
--- Step 5: Indexes (fast lookup ke liye)
-CREATE INDEX IF NOT EXISTS idx_devices_app_id ON registered_devices(app_id);
-CREATE INDEX IF NOT EXISTS idx_app_ids_app_id ON app_ids(app_id);`;
-
 export default function DbSetup() {
-  const [copied, setCopied] = useState(false);
+  const [pat, setPat] = useState("");
+  const [showPat, setShowPat] = useState(false);
   const { toast } = useToast();
+  const qc = useQueryClient();
 
-  const { data: init, isLoading, refetch, isFetching } = useQuery({
+  const { data: status, isLoading, refetch, isFetching } = useQuery({
     queryKey: ["db-init"],
     queryFn: api.initStatus,
     retry: false,
+    refetchInterval: (q) => (q.state.data?.tables_exist ? false : 0),
   });
 
-  const tablesOk = init?.tables_exist === true;
+  const setupMut = useMutation({
+    mutationFn: async () => {
+      const res = await fetch("/api/admin/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pat }),
+      });
+      const d = await res.json() as { ok: boolean; message: string };
+      if (!d.ok) throw new Error(d.message);
+      return d;
+    },
+    onSuccess: () => {
+      toast({ title: "✅ Tables Create Ho Gayi!", description: "Ab App IDs banana start karo!" });
+      qc.invalidateQueries({ queryKey: ["db-init"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
+      qc.invalidateQueries({ queryKey: ["app-ids"] });
+      setPat("");
+      refetch();
+    },
+    onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
+  });
 
-  function copySQL() {
-    navigator.clipboard.writeText(SQL).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-      toast({ title: "SQL copied!", description: "Supabase SQL Editor mein paste karo." });
-    });
-  }
+  const tablesOk = status?.tables_exist === true;
 
   return (
-    <div className="space-y-5 max-w-2xl mx-auto">
+    <div className="space-y-5 max-w-xl mx-auto">
       <div>
         <h2 className="text-lg font-bold text-foreground">Database Setup</h2>
-        <p className="text-xs text-muted-foreground mt-0.5">Tables check karo aur setup karo — sirf ek baar karna hai</p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {tablesOk ? "Sab ready hai — App IDs banana shuru karo!" : "Sirf ek baar karna hai — phir sab kuch panel se auto-manage hoga"}
+        </p>
       </div>
 
-      {/* Status Card */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold flex items-center gap-2">
-            <Database className="w-4 h-4 text-primary" /> Table Status
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
+      {/* Status */}
+      <Card className={tablesOk ? "border-green-200 dark:border-green-900/50" : ""}>
+        <CardContent className="py-4">
           {isLoading ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              Checking tables...
+              <Loader2 className="w-4 h-4 animate-spin" /> Checking tables...
             </div>
           ) : (
-            <>
+            <div className="flex items-center justify-between gap-4">
               <div className="flex items-center gap-3">
-                {tablesOk ? (
-                  <CheckCircle2 className="w-5 h-5 text-green-500" />
-                ) : (
-                  <XCircle className="w-5 h-5 text-destructive" />
-                )}
+                {tablesOk
+                  ? <CheckCircle2 className="w-6 h-6 text-green-500 flex-shrink-0" />
+                  : <XCircle className="w-6 h-6 text-destructive flex-shrink-0" />}
                 <div>
-                  <p className="text-sm font-medium">
-                    {tablesOk ? "Tables ready hain!" : "Tables nahi mili"}
+                  <p className="text-sm font-semibold">
+                    {tablesOk ? "Database Ready Hai! 🎉" : "Tables abhi nahi hain"}
                   </p>
                   <p className="text-xs text-muted-foreground mt-0.5">
                     {tablesOk
-                      ? "app_ids aur registered_devices dono tables exist karti hain. App use karne ke liye ready hai."
-                      : "app_ids ya registered_devices table nahi mili. Neeche SQL run karo."}
+                      ? "app_ids + registered_devices — dono tables exist karti hain"
+                      : "Neeche Supabase Access Token daalo — tables auto-bana do"}
                   </p>
                 </div>
               </div>
-
-              {init?.app_ids_error && (
-                <div className="text-xs bg-destructive/10 text-destructive px-3 py-2 rounded">
-                  <strong>app_ids error:</strong> {init.app_ids_error}
-                </div>
-              )}
-              {init?.devices_error && (
-                <div className="text-xs bg-destructive/10 text-destructive px-3 py-2 rounded">
-                  <strong>registered_devices error:</strong> {init.devices_error}
-                </div>
-              )}
-
-              <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching} data-testid="button-recheck">
-                <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${isFetching ? "animate-spin" : ""}`} />
-                {isFetching ? "Checking..." : "Re-check Tables"}
+              <Button size="sm" variant="outline" onClick={() => refetch()} disabled={isFetching}>
+                <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} />
               </Button>
-            </>
+            </div>
           )}
         </CardContent>
       </Card>
 
-      {/* SQL Instructions */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-semibold">Setup SQL (sirf ek baar run karo)</CardTitle>
-          <CardDescription className="text-xs">
-            Supabase Dashboard → SQL Editor → Neeche SQL paste karo → Run
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex justify-end mb-2">
-            <Button size="sm" variant="outline" onClick={copySQL} data-testid="button-copy-sql">
-              {copied ? <><Check className="w-3.5 h-3.5 mr-1.5 text-green-500" /> Copied!</> : <><Copy className="w-3.5 h-3.5 mr-1.5" /> Copy SQL</>}
-            </Button>
-          </div>
-          <pre className="bg-muted rounded-md p-4 text-[11px] overflow-x-auto font-mono text-foreground/80 leading-relaxed max-h-80 overflow-y-auto">
-            {SQL}
-          </pre>
-        </CardContent>
-      </Card>
+      {/* Auto-setup via PAT — only shown if tables don't exist */}
+      {!tablesOk && (
+        <Card className="border-primary/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold flex items-center gap-2">
+              <Wand2 className="w-4 h-4 text-primary" /> Auto Setup — Sirf 2 Steps
+            </CardTitle>
+            <CardDescription className="text-xs">
+              SQL editor khulne ki zaroorat nahi — bas ek token paste karo, baaki sab automatic
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {/* Step 1 */}
+            <div className="flex gap-3">
+              <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">1</span>
+              <div className="flex-1">
+                <p className="text-sm font-medium">Supabase Access Token generate karo</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Supabase Account Settings kholo → "Access Tokens" → "Generate new token"
+                </p>
+                <a
+                  href="https://supabase.com/dashboard/account/tokens"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 mt-2 text-xs font-medium text-primary hover:underline"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  supabase.com/dashboard/account/tokens
+                </a>
+                <p className="text-[11px] text-muted-foreground mt-1.5 bg-muted px-2 py-1 rounded">
+                  💡 Yeh SQL editor nahi hai — sirf Account Settings ka ek token hai. Copy karo aur neeche paste karo.
+                </p>
+              </div>
+            </div>
 
-      {/* Steps */}
-      <Card className="border-dashed">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Setup Steps</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
+            {/* Step 2 */}
+            <div className="flex gap-3">
+              <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground text-xs font-bold flex items-center justify-center flex-shrink-0 mt-0.5">2</span>
+              <div className="flex-1">
+                <p className="text-sm font-medium">Token yahan paste karo → Auto Setup!</p>
+                <div className="flex gap-2 mt-2">
+                  <div className="relative flex-1">
+                    <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                    <Input
+                      type={showPat ? "text" : "password"}
+                      placeholder="sbp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                      value={pat}
+                      onChange={(e) => setPat(e.target.value)}
+                      className="pl-8 pr-16 font-mono text-xs"
+                      data-testid="input-pat"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPat(!showPat)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground hover:text-foreground px-1"
+                    >
+                      {showPat ? "hide" : "show"}
+                    </button>
+                  </div>
+                  <Button
+                    onClick={() => setupMut.mutate()}
+                    disabled={!pat.trim() || setupMut.isPending}
+                    className="shrink-0"
+                    data-testid="button-auto-setup"
+                  >
+                    {setupMut.isPending ? (
+                      <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Setting up...</>
+                    ) : (
+                      <><ArrowRight className="w-4 h-4 mr-1.5" /> Setup Karo</>
+                    )}
+                  </Button>
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1.5">
+                  Token sirf table banane ke liye use hoga — store nahi hoga, ek baar ka kaam hai ✓
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Success state */}
+      {tablesOk && (
+        <Card className="bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-900/50">
+          <CardContent className="py-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-green-700 dark:text-green-400">Database fully ready!</p>
+                <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
+                  "App IDs & Login" page pe jao aur pehla App ID banao 🚀
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Info box */}
+      <div className="rounded-md border border-dashed p-4 space-y-1.5">
+        <p className="text-xs font-semibold text-muted-foreground">Kya create hoga?</p>
+        <div className="space-y-1">
           {[
-            "Supabase Dashboard kholo: https://supabase.com/dashboard",
-            "Apna project select karo (dvgcrxrnnezbdjpujjjt)",
-            "SQL Editor mein jao (left sidebar mein)",
-            "Upar SQL copy karo aur paste karo",
-            "Run karke wapas yahan aao aur 'Re-check Tables' dabaao",
-            "Green checkmark aaye toh App IDs banao!",
-          ].map((step, i) => (
-            <div key={i} className="flex items-start gap-2.5">
-              <span className="w-5 h-5 rounded-full bg-primary/10 text-primary text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
-              <p className="text-xs text-muted-foreground">{step}</p>
+            ["app_ids", "App IDs, passwords, 30-day sessions"],
+            ["registered_devices", "Android devices jo register honge"],
+          ].map(([table, desc]) => (
+            <div key={table} className="flex items-center gap-2">
+              <Database className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+              <span className="font-mono text-xs text-foreground">{table}</span>
+              <span className="text-[11px] text-muted-foreground">— {desc}</span>
             </div>
           ))}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

@@ -1,14 +1,57 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../lib/supabase-admin";
 import crypto from "crypto";
-import pg from "pg";
 
 const router = Router();
 
-// ── Postgres client for DDL (table creation) ──────────────────────────────────
-function getPgClient() {
-  return new pg.Client({ connectionString: process.env["SUPABASE_DB_URL"] });
-}
+// ── Supabase Management API ────────────────────────────────────────────────────
+const PROJECT_REF = "dvgcrxrnnezbdjpujjjt";
+
+const SETUP_SQL = `
+CREATE TABLE IF NOT EXISTS app_ids (
+  id bigint generated always as identity primary key,
+  app_id text not null unique,
+  password_hash text not null,
+  salt text not null,
+  admin_label text,
+  created_at timestamptz default now(),
+  expires_at timestamptz,
+  is_active boolean default true
+);
+CREATE TABLE IF NOT EXISTS registered_devices (
+  id bigint generated always as identity primary key,
+  app_id text not null,
+  device_id text not null,
+  device_name text,
+  device_model text,
+  android_version text,
+  registered_at timestamptz default now(),
+  is_active boolean default true,
+  last_seen timestamptz,
+  admin_id text
+);
+ALTER TABLE app_ids ENABLE ROW LEVEL SECURITY;
+ALTER TABLE registered_devices ENABLE ROW LEVEL SECURITY;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_ids' AND policyname='service_role_all_app_ids') THEN
+    CREATE POLICY "service_role_all_app_ids" ON app_ids FOR ALL TO service_role USING (true) WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='service_role_all_devices') THEN
+    CREATE POLICY "service_role_all_devices" ON registered_devices FOR ALL TO service_role USING (true) WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='anon_read_devices') THEN
+    CREATE POLICY "anon_read_devices" ON registered_devices FOR SELECT TO anon USING (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='anon_write_devices') THEN
+    CREATE POLICY "anon_write_devices" ON registered_devices FOR INSERT TO anon WITH CHECK (true);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='anon_update_devices') THEN
+    CREATE POLICY "anon_update_devices" ON registered_devices FOR UPDATE TO anon USING (true);
+  END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_devices_app_id ON registered_devices(app_id);
+CREATE INDEX IF NOT EXISTS idx_app_ids_app_id ON app_ids(app_id);
+`;
 
 // ── Password helpers ───────────────────────────────────────────────────────────
 function hashPassword(password: string, salt: string): string {
@@ -18,7 +61,7 @@ function generateSalt(): string {
   return crypto.randomBytes(16).toString("hex");
 }
 
-// ── App ID auto-generator: format MR-ROBOT-NSSW@NDJ ──────────────────────────
+// ── App ID generator: format WORD-WORD-XXXX@YYY ───────────────────────────────
 const WORDS = [
   "MR","ROBOT","ALPHA","BETA","GAMMA","DELTA","ECHO","FOXTROT","GHOST","HAWK",
   "IRON","JADE","KING","LION","MAXIM","NOVA","ONYX","PRIME","QUICK","RAVEN",
@@ -37,130 +80,83 @@ function randomLetters(n: number): string {
 function generateAppId(): string {
   const w1 = WORDS[Math.floor(Math.random() * WORDS.length)];
   const w2 = WORDS[Math.floor(Math.random() * WORDS.length)];
-  const part1 = randomLetters(4);
-  const part2 = randomLetters(3);
-  return `${w1}-${w2}-${part1}@${part2}`;
+  return `${w1}-${w2}-${randomLetters(4)}@${randomLetters(3)}`;
 }
 
-// ── Create Tables (called via /admin/init) ────────────────────────────────────
-async function createTables(): Promise<{ ok: boolean; message: string }> {
-  if (!process.env["SUPABASE_DB_URL"]) {
-    return { ok: false, message: "SUPABASE_DB_URL not set" };
-  }
-  const client = getPgClient();
-  try {
-    await client.connect();
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS app_ids (
-        id bigint generated always as identity primary key,
-        app_id text not null unique,
-        password_hash text not null,
-        salt text not null,
-        admin_label text,
-        created_at timestamptz default now(),
-        expires_at timestamptz,
-        is_active boolean default true
-      );
+// ── SETUP: Auto-create tables via Supabase Management API ────────────────────
+router.post("/admin/setup", async (req, res) => {
+  const { pat } = req.body as { pat?: string };
+  if (!pat?.trim()) return res.status(400).json({ ok: false, message: "Access token required" });
 
-      CREATE TABLE IF NOT EXISTS registered_devices (
-        id bigint generated always as identity primary key,
-        app_id text not null,
-        device_id text not null,
-        device_name text,
-        device_model text,
-        android_version text,
-        registered_at timestamptz default now(),
-        is_active boolean default true,
-        last_seen timestamptz,
-        admin_id text
-      );
-
-      ALTER TABLE app_ids ENABLE ROW LEVEL SECURITY;
-      ALTER TABLE registered_devices ENABLE ROW LEVEL SECURITY;
-
-      DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='app_ids' AND policyname='service_role_all_app_ids') THEN
-          CREATE POLICY "service_role_all_app_ids" ON app_ids FOR ALL TO service_role USING (true) WITH CHECK (true);
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='service_role_all_devices') THEN
-          CREATE POLICY "service_role_all_devices" ON registered_devices FOR ALL TO service_role USING (true) WITH CHECK (true);
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='anon_read_devices') THEN
-          CREATE POLICY "anon_read_devices" ON registered_devices FOR SELECT TO anon USING (true);
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='anon_write_devices') THEN
-          CREATE POLICY "anon_write_devices" ON registered_devices FOR INSERT TO anon WITH CHECK (true);
-        END IF;
-        IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='registered_devices' AND policyname='anon_update_devices') THEN
-          CREATE POLICY "anon_update_devices" ON registered_devices FOR UPDATE TO anon USING (true);
-        END IF;
-      END $$;
-
-      CREATE INDEX IF NOT EXISTS idx_devices_app_id ON registered_devices(app_id);
-      CREATE INDEX IF NOT EXISTS idx_app_ids_app_id ON app_ids(app_id);
-    `);
-    return { ok: true, message: "Tables created successfully" };
-  } catch (err) {
-    return { ok: false, message: String(err) };
-  } finally {
-    await client.end();
-  }
-}
-
-// ── INIT: Check + Create Tables ────────────────────────────────────────────────
-router.post("/admin/init", async (req, res) => {
-  // Check if tables already exist via Supabase client
+  // Check if tables already exist
   const [{ error: e1 }, { error: e2 }] = await Promise.all([
     supabaseAdmin.from("app_ids").select("id").limit(1),
     supabaseAdmin.from("registered_devices").select("id").limit(1),
   ]);
-
-  const tablesExist = !e1 && !e2;
-
-  if (tablesExist) {
-    return res.json({ ok: true, tables_exist: true, message: "Tables already exist" });
+  if (!e1 && !e2) {
+    return res.json({ ok: true, message: "Tables already exist" });
   }
 
-  // Create them
-  const result = await createTables();
-  res.json({ ok: result.ok, tables_exist: result.ok, message: result.message });
+  // Call Management API to create tables
+  const mgmtRes = await fetch(
+    `https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${pat.trim()}`,
+      },
+      body: JSON.stringify({ query: SETUP_SQL }),
+    }
+  );
+
+  const mgmtJson = await mgmtRes.json() as { message?: string; error?: string };
+
+  if (!mgmtRes.ok) {
+    const msg = mgmtJson.message ?? mgmtJson.error ?? `HTTP ${mgmtRes.status}`;
+    return res.status(400).json({ ok: false, message: msg });
+  }
+
+  res.json({ ok: true, message: "Tables created successfully" });
 });
 
-router.get("/admin/init-status", async (req, res) => {
+// ── INIT STATUS ────────────────────────────────────────────────────────────────
+router.get("/admin/init-status", async (_req, res) => {
   const [{ error: e1 }, { error: e2 }] = await Promise.all([
     supabaseAdmin.from("app_ids").select("id").limit(1),
     supabaseAdmin.from("registered_devices").select("id").limit(1),
   ]);
-  res.json({ tables_exist: !e1 && !e2, app_ids_error: e1?.message ?? null, devices_error: e2?.message ?? null });
+  res.json({
+    tables_exist: !e1 && !e2,
+    app_ids_error: e1?.message ?? null,
+    devices_error: e2?.message ?? null,
+  });
 });
 
-// ── Generate a unique App ID ───────────────────────────────────────────────────
+// ── GENERATE App ID ────────────────────────────────────────────────────────────
 router.get("/admin/generate-app-id", async (_req, res) => {
-  // Generate and check uniqueness
   for (let i = 0; i < 10; i++) {
     const candidate = generateAppId();
     const { data } = await supabaseAdmin.from("app_ids").select("app_id").eq("app_id", candidate).single();
     if (!data) return res.json({ app_id: candidate });
   }
-  res.json({ app_id: generateAppId() }); // fallback (collision extremely unlikely)
+  res.json({ app_id: generateAppId() });
 });
 
 // ── APP IDs: List ──────────────────────────────────────────────────────────────
-router.get("/admin/app-ids", async (req, res) => {
+router.get("/admin/app-ids", async (_req, res) => {
   const { data, error } = await supabaseAdmin
     .from("app_ids")
     .select("id,app_id,admin_label,created_at,expires_at,is_active")
     .order("created_at", { ascending: false });
 
-  // Tables don't exist yet — return empty instead of crashing the UI
   if (error) {
-    const isTableMissing = error.message.includes("does not exist") || error.code === "PGRST205" || error.code === "42P01";
-    if (isTableMissing) return res.json([]);
+    const missing = error.message.includes("does not exist") || error.code === "PGRST205" || error.code === "42P01";
+    if (missing) return res.json([]);
     return res.status(500).json({ error: error.message });
   }
 
   const { data: devices } = await supabaseAdmin.from("registered_devices").select("app_id,is_active");
-
   const counts: Record<string, { total: number; active: number }> = {};
   for (const d of devices ?? []) {
     if (!counts[d.app_id]) counts[d.app_id] = { total: 0, active: 0 };
@@ -175,25 +171,14 @@ router.get("/admin/app-ids", async (req, res) => {
   })));
 });
 
-// ── APP IDs: Create (auto-generated ID, default password 1234, 30-day expiry) ─
+// ── APP IDs: Create (default password 1234, 30-day expiry) ────────────────────
 router.post("/admin/app-ids", async (req, res) => {
-  const {
-    app_id,
-    password = "1234",
-    admin_label,
-    expires_at,
-  } = req.body as {
-    app_id: string;
-    password?: string;
-    admin_label?: string;
-    expires_at?: string;
+  const { app_id, password = "1234", admin_label, expires_at } = req.body as {
+    app_id: string; password?: string; admin_label?: string; expires_at?: string;
   };
-
   if (!app_id) return res.status(400).json({ error: "app_id is required" });
 
-  // Default 30-day expiry if not provided
   const expiresAt = expires_at ?? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-
   const salt = generateSalt();
   const password_hash = hashPassword(password, salt);
 
@@ -207,7 +192,6 @@ router.post("/admin/app-ids", async (req, res) => {
     if (error.code === "23505") return res.status(409).json({ error: `App ID "${app_id}" already exists` });
     return res.status(500).json({ error: error.message });
   }
-
   res.status(201).json(data);
 });
 
@@ -215,15 +199,12 @@ router.post("/admin/app-ids", async (req, res) => {
 router.patch("/admin/app-ids/:appId/password", async (req, res) => {
   const { appId } = req.params;
   const { current_password, new_password } = req.body as { current_password: string; new_password: string };
-
   if (!current_password || !new_password)
     return res.status(400).json({ error: "current_password and new_password required" });
 
   const { data: existing } = await supabaseAdmin
     .from("app_ids").select("salt,password_hash").eq("app_id", appId).single();
-
   if (!existing) return res.status(404).json({ error: "App ID not found" });
-
   if (hashPassword(current_password, existing.salt) !== existing.password_hash)
     return res.status(401).json({ error: "Current password galat hai" });
 
@@ -232,7 +213,6 @@ router.patch("/admin/app-ids/:appId/password", async (req, res) => {
     .from("app_ids")
     .update({ password_hash: hashPassword(new_password, newSalt), salt: newSalt })
     .eq("app_id", appId);
-
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true, message: "Password update ho gaya" });
 });
@@ -245,17 +225,15 @@ router.post("/admin/app-ids/:appId/reset-password", async (req, res) => {
     .from("app_ids")
     .update({ password_hash: hashPassword("1234", newSalt), salt: newSalt })
     .eq("app_id", appId);
-
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true, message: "Password reset to 1234" });
 });
 
-// ── APP IDs: Extend Session (+ 30 days) ───────────────────────────────────────
+// ── APP IDs: Extend +30 Days ───────────────────────────────────────────────────
 router.post("/admin/app-ids/:appId/extend", async (req, res) => {
   const { appId } = req.params;
   const newExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  const { error } = await supabaseAdmin
-    .from("app_ids").update({ expires_at: newExpiry }).eq("app_id", appId);
+  const { error } = await supabaseAdmin.from("app_ids").update({ expires_at: newExpiry }).eq("app_id", appId);
   if (error) return res.status(500).json({ error: error.message });
   res.json({ ok: true, expires_at: newExpiry });
 });
@@ -284,7 +262,11 @@ router.get("/admin/devices", async (req, res) => {
   let query = supabaseAdmin.from("registered_devices").select("*").order("registered_at", { ascending: false });
   if (app_id) query = query.eq("app_id", app_id);
   const { data, error } = await query;
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    const missing = error.message.includes("does not exist") || error.code === "PGRST205";
+    if (missing) return res.json([]);
+    return res.status(500).json({ error: error.message });
+  }
   res.json(data ?? []);
 });
 
