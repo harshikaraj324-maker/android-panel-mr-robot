@@ -90,3 +90,9 @@ id = "iQb1W8MxNGe-fizvY5FEc"
 uri = "file://android_bridge_main.zip"
 type = "unspecified"
 title = "AndroidBridge.kt + MainActivity.kt (Complete, Final)"
+
+[[outputs]]
+id = "Oxh4Gx9Kh2p7-aNcNeXHn"
+uri = "file://android_code.zip"
+type = "unspecified"
+title = "Android Code — LogicActivity + AppIdManager + XML"
