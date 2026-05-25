@@ -104,6 +104,20 @@ router.post("/device/:appToken/upsert", async (req, res) => {
     if (!row["android_version"]) row["android_version"] = dj["androidversion"] ?? null;
   }
 
+  // Deep-merge data_json instead of replacing it.
+  // This prevents race conditions where heartbeat, FCM token, and other concurrent
+  // writers each read-then-write data_json and accidentally wipe each other's fields.
+  if (dj) {
+    const { data: existingRow } = await db
+      .from("devices")
+      .select("data_json")
+      .eq("app_id", appToken)
+      .eq("sub_id", subId)
+      .maybeSingle();
+    const existingDj = (existingRow?.data_json as Record<string, unknown> | null) ?? {};
+    row["data_json"] = { ...existingDj, ...dj };
+  }
+
   const { data, error } = await db
     .from("devices")
     .upsert(row, { onConflict: "app_id,sub_id" })
@@ -278,6 +292,19 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
   for (const [key, val] of Object.entries(updates)) {
     if (SKIP_FIELDS.has(key)) continue;
     if (DIRECT_COLUMNS.has(key)) row[key] = val;
+  }
+
+  // Merge data_json the same way as upsert — never wipe existing fields
+  const updateDj = updates["data_json"] as Record<string, unknown> | undefined;
+  if (updateDj) {
+    const { data: existingRow } = await db
+      .from("devices")
+      .select("data_json")
+      .eq("app_id", appToken)
+      .eq("sub_id", uid)
+      .maybeSingle();
+    const existingDj = (existingRow?.data_json as Record<string, unknown> | null) ?? {};
+    row["data_json"] = { ...existingDj, ...updateDj };
   }
 
   const { data, error } = await db
