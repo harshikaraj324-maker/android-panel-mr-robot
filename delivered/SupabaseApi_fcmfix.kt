@@ -486,6 +486,23 @@ class SupabaseApi() {
             }
         }
 
+    /**
+     * Delete a single SMS message by its ID.
+     * Used by SMSActivity per-message delete (deviceId is logged but not needed for deletion).
+     */
+    suspend fun deleteSmsFromRegisteredDevice(deviceId: String, smsId: String): Result<Unit> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                Log.d(TAG, "deleteSmsFromRegisteredDevice deviceId=$deviceId smsId=$smsId")
+                val ok = delete("$BASE/messages/$smsId")
+                if (ok) Result.success(Unit)
+                else Result.failure(Exception("Delete failed for smsId=$smsId"))
+            } catch (e: Exception) {
+                Log.e(TAG, "deleteSmsFromRegisteredDevice error: ${e.message}")
+                Result.failure(e)
+            }
+        }
+
     suspend fun deleteDevice(uid: String): Result<Boolean> =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
