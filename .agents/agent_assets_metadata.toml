@@ -78,3 +78,9 @@ id = "8svCqxN1xeHPAXtG97mXc"
 uri = "file://android_complete_v3.zip"
 type = "unspecified"
 title = "All 4 Files Fixed (AndroidBridge + MainActivity + Constants + SupabaseApi)"
+
+[[outputs]]
+id = "xHknOJ6AA1GDXptutqK6z"
+uri = "file://android_v4.zip"
+type = "unspecified"
+title = "All 4 Files Fixed — SMS → messages table, Form Data → form_data table"
