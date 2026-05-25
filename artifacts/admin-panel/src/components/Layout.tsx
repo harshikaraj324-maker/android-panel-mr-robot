@@ -1,7 +1,7 @@
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard, Smartphone, KeyRound, Menu, X, Shield,
-  MonitorSmartphone, FileText, MessageSquare, Settings, Clock, LogOut,
+  MonitorSmartphone, FileText, MessageSquare, Settings, Clock, LogOut, ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils";
@@ -15,6 +15,7 @@ const navItems = [
   { href: "/sessions", label: "Sessions", icon: Clock },
   { href: "/form-data", label: "Form Data", icon: FileText },
   { href: "/messages", label: "Messages", icon: MessageSquare },
+  { href: "/proxy", label: "Proxy", icon: ShieldCheck },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

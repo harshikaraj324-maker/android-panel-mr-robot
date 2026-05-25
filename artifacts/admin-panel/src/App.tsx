@@ -13,6 +13,7 @@ import FormData from "@/pages/FormData";
 import Messages from "@/pages/Messages";
 import SettingsPage from "@/pages/SettingsPage";
 import AppDetail from "@/pages/AppDetail";
+import Proxy from "@/pages/Proxy";
 import NotFound from "@/pages/not-found";
 import { getToken } from "@/lib/api";
 
@@ -34,6 +35,7 @@ function Router({ onLogout }: { onLogout: () => void }) {
         <Route path="/settings">
           {() => <SettingsPage onLogout={onLogout} />}
         </Route>
+        <Route path="/proxy" component={Proxy} />
         <Route path="/app/:appId" component={AppDetail} />
         <Route component={NotFound} />
       </Switch>
