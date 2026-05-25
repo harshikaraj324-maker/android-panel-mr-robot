@@ -4,18 +4,14 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
+import AppIds from "@/pages/AppIds";
 import Devices from "@/pages/Devices";
 import AppDetail from "@/pages/AppDetail";
-import Setup from "@/pages/Setup";
+import DbSetup from "@/pages/DbSetup";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      retry: 1,
-      staleTime: 30_000,
-    },
-  },
+  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
 });
 
 function Router() {
@@ -23,16 +19,17 @@ function Router() {
     <Layout>
       <Switch>
         <Route path="/" component={Dashboard} />
+        <Route path="/app-ids" component={AppIds} />
         <Route path="/devices" component={Devices} />
         <Route path="/app/:appId" component={AppDetail} />
-        <Route path="/setup" component={Setup} />
+        <Route path="/setup" component={DbSetup} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
   );
 }
 
-function App() {
+export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
@@ -44,5 +41,3 @@ function App() {
     </QueryClientProvider>
   );
 }
-
-export default App;
