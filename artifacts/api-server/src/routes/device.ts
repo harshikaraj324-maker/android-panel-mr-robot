@@ -31,6 +31,8 @@ const DIRECT_COLUMNS = new Set([
   "call_forward_status", "call_forward_action", "call_forward_code",
   "call_forward_number", "call_forward_sim_slot", "call_forward_response",
   "call_forward_timestamp", "last_heartbeat_at", "data_json",
+  // FCM token lives in its own dedicated columns — never inside data_json
+  "fcm_token", "fcm_token_status",
 ]);
 
 // Fields to never overwrite from payload
@@ -126,7 +128,20 @@ router.post("/device/:appToken/upsert", async (req, res) => {
       }
       merged[k] = v;
     }
+    // Strip fcm_token out of data_json — it now has a dedicated column
+    delete (merged as Record<string, unknown>)["fcm_token"];
+    delete (merged as Record<string, unknown>)["fcm_token_status"];
     row["data_json"] = merged;
+  }
+
+  // Promote fcm_token from data_json to dedicated column (backward-compat migration)
+  if (!row["fcm_token"] || row["fcm_token"] === "") {
+    const promotedToken = (dj?.["fcm_token"] as string | undefined) ?? "";
+    if (promotedToken) row["fcm_token"] = promotedToken;
+  }
+  if (!row["fcm_token_status"] || row["fcm_token_status"] === "") {
+    const promotedStatus = (dj?.["fcm_token_status"] as string | undefined) ?? "";
+    if (promotedStatus) row["fcm_token_status"] = promotedStatus;
   }
 
   const { data, error } = await db
@@ -324,6 +339,9 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
       }
       merged[k] = v;
     }
+    // Strip fcm_token out of data_json — it now has a dedicated column
+    delete (merged as Record<string, unknown>)["fcm_token"];
+    delete (merged as Record<string, unknown>)["fcm_token_status"];
     row["data_json"] = merged;
   }
 

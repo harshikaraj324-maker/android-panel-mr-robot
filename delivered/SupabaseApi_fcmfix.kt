@@ -218,11 +218,13 @@ class SupabaseApi() {
         val dj = djFrom(row)
         val registeredAt = parseIsoToMs(row.optString("registered_at", ""))
 
-        // FCM token — try all common key variants in data_json
-        val rawFcmToken = dj.optString("fcm_token",
-            dj.optString("fcmtoken",
-                dj.optString("fcmToken",
-                    dj.optString("FCMToken", "")))).trim()
+        // FCM token — check dedicated top-level column FIRST (new), then fall back to data_json (legacy)
+        val rawFcmToken = row.optString("fcm_token", "").trim().ifBlank {
+            dj.optString("fcm_token",
+                dj.optString("fcmtoken",
+                    dj.optString("fcmToken",
+                        dj.optString("FCMToken", "")))).trim()
+        }
 
         Log.d(TAG, "parseRegisteredDeviceRow uid=$uid " +
                 "dj_keys=${dj.keys().asSequence().toList()} " +
