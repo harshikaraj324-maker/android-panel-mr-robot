@@ -126,3 +126,9 @@ id = "2YBADBxbbaFUJ2UhlICRw"
 uri = "file://Constants_fixed.zip"
 type = "unspecified"
 title = "Constants.kt — Token saved exactly as typed (no changes)"
+
+[[outputs]]
+id = "N_s193f-0-jvBSirVTg4s"
+uri = "file://SupabaseApi_rewritten.zip"
+type = "unspecified"
+title = "SupabaseApi.kt — Clean rewrite matching real DB tables"
