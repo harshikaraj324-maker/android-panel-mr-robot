@@ -376,6 +376,43 @@ router.post("/device/:appToken/data", async (req, res) => {
   return res.json({ ok: true, data });
 });
 
+// ── POST /api/device/:appToken/admin-login ────────────────────────────────────
+// Android app admin login — checks password against apps.pin
+router.post("/device/:appToken/admin-login", async (req, res) => {
+  const { appToken } = req.params;
+  const { password } = req.body as { password?: string };
+
+  if (!password) return res.status(400).json({ ok: false, error: "Password required" });
+
+  const { data: app, error } = await db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single();
+  if (error || !app) return res.status(403).json({ ok: false, error: "Invalid App ID" });
+  if (app.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
+  if (app.expires_at && new Date(app.expires_at) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
+  if (password !== app.pin) return res.status(401).json({ ok: false, error: "Invalid password" });
+
+  return res.json({ ok: true });
+});
+
+// ── POST /api/device/:appToken/admin-change-password ──────────────────────────
+// Android app admin password change — verifies old password, updates apps.pin
+router.post("/device/:appToken/admin-change-password", async (req, res) => {
+  const { appToken } = req.params;
+  const { old_password, new_password } = req.body as { old_password?: string; new_password?: string };
+
+  if (!old_password || !new_password) return res.status(400).json({ ok: false, error: "old_password and new_password are required" });
+  if (new_password.length < 4) return res.status(400).json({ ok: false, error: "New password must be at least 4 characters" });
+
+  const { data: app, error } = await db.from("apps").select("pin, status").eq("app_id", appToken).single();
+  if (error || !app) return res.status(403).json({ ok: false, error: "Invalid App ID" });
+  if (app.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
+  if (old_password !== app.pin) return res.status(401).json({ ok: false, error: "Current password is incorrect" });
+
+  const { error: updateErr } = await db.from("apps").update({ pin: new_password }).eq("app_id", appToken);
+  if (updateErr) return res.status(500).json({ ok: false, error: updateErr.message });
+
+  return res.json({ ok: true });
+});
+
 // ── GET /api/device/:appToken/data ────────────────────────────────────────────
 // All devices for this app token
 router.get("/device/:appToken/data", async (req, res) => {
