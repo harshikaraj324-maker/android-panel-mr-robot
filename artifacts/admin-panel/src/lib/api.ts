@@ -44,7 +44,8 @@ export interface FormDataRow {
 }
 export interface MessageRow {
   id: number; app_id: string; sub_id: string | null;
-  from_id: string | null; content: string; message_type: string;
+  from_id: string | null; to_id: string | null;
+  content: string; message_type: string;
   sent_at: string; is_read: boolean;
 }
 export interface Stats {

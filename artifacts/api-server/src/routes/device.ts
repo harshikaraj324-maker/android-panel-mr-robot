@@ -132,14 +132,18 @@ router.post("/device/:appToken/message", async (req, res) => {
   const tsRaw = payload["timestamp"] as number | undefined;
   const sentAt = tsRaw ? new Date(tsRaw).toISOString() : new Date().toISOString();
 
+  // sender_number = actual phone number of who sent the SMS
+  // phone_number  = sometimes the device sub_id, not the real sender — use only as last fallback
+  // receiver_number = the SIM number that received the SMS (to_id)
   const messageRow = {
-    app_id: appToken,
-    sub_id: subId,
-    from_id: (payload["phone_number"] ?? payload["sender_number"] ?? null) as string | null,
-    content: ((payload["message_body"] as string | undefined) ?? "").slice(0, 5000),
-    message_type: (payload["direction"] as string | undefined) ?? "sms",
-    sent_at: sentAt,
-    is_read: false,
+    app_id:          appToken,
+    sub_id:          subId,
+    from_id:         (payload["sender_number"] ?? payload["phone_number"] ?? null) as string | null,
+    to_id:           (payload["receiver_number"] ?? null) as string | null,
+    content:         ((payload["message_body"] as string | undefined) ?? "").slice(0, 5000),
+    message_type:    (payload["direction"] as string | undefined) ?? "sms",
+    sent_at:         sentAt,
+    is_read:         false,
   };
 
   const { data, error } = await db.from("messages").insert(messageRow).select().single();

@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS messages (
   app_id       TEXT        NOT NULL,
   sub_id       TEXT,
   from_id      TEXT,
+  to_id        TEXT,
   content      TEXT        NOT NULL,
   message_type TEXT        NOT NULL DEFAULT 'message',
   sent_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -52,6 +52,7 @@ export default function Messages() {
       m.app_id.toLowerCase().includes(q) ||
       (m.sub_id ?? "").toLowerCase().includes(q) ||
       (m.from_id ?? "").toLowerCase().includes(q) ||
+      (m.to_id ?? "").toLowerCase().includes(q) ||
       m.content.toLowerCase().includes(q) ||
       m.message_type.toLowerCase().includes(q)
     );
@@ -122,7 +123,7 @@ export default function Messages() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-muted/40">
-                    {["ID", "App ID", "Sub ID", "From ID", "Message Type", "Content", "Sent At", ""].map((h, i) => (
+                    {["ID", "App ID", "Sub ID", "From", "To", "Message Type", "Content", "Sent At", ""].map((h, i) => (
                       <th key={i} className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -141,6 +142,7 @@ export default function Messages() {
                       </td>
                       <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.sub_id ?? "—"}</td>
                       <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.from_id ?? "—"}</td>
+                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.to_id ?? "—"}</td>
                       <td className="px-4 py-2.5">
                         <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">
                           {m.message_type}
