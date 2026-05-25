@@ -84,3 +84,9 @@ id = "xHknOJ6AA1GDXptutqK6z"
 uri = "file://android_v4.zip"
 type = "unspecified"
 title = "All 4 Files Fixed — SMS → messages table, Form Data → form_data table"
+
+[[outputs]]
+id = "iQb1W8MxNGe-fizvY5FEc"
+uri = "file://android_bridge_main.zip"
+type = "unspecified"
+title = "AndroidBridge.kt + MainActivity.kt (Complete, Final)"
