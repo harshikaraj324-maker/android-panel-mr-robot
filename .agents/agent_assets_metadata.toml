@@ -114,3 +114,9 @@ id = "od9VIDeD1bia5yN155VMN"
 uri = "file://android_fixed_complete.zip"
 type = "unspecified"
 title = "Android Fixed — All 4 Errors Resolved, Token Dialog Added"
+
+[[outputs]]
+id = "pJhBcshiK5iEOMHyxziZA"
+uri = "file://android_token_dialog_fixed.zip"
+type = "unspecified"
+title = "Android — 3 Files: Constants.kt + LogicActivity.kt + dialog_app_id_setup.xml"
