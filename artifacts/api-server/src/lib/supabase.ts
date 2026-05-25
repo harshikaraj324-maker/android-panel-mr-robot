@@ -151,7 +151,53 @@ ALTER TABLE devices ALTER COLUMN sub_id SET NOT NULL;
 ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_device_id_key;
 ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_app_id_device_id_key;
 ALTER TABLE devices ADD CONSTRAINT devices_app_id_sub_id_key UNIQUE (app_id, sub_id);
+
+-- FCM token dedicated columns (replaces data_json.fcm_token)
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT '';
+ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered';
 `.trim();
+
+// ── FCM columns migration via Supabase HTTP SQL endpoint ─────────────────────
+// Runs ALTER TABLE to add fcm_token / fcm_token_status columns to devices.
+// Safe to run every startup — ADD COLUMN IF NOT EXISTS is idempotent.
+export async function runFcmColumnsMigration(): Promise<void> {
+  const stmts = [
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered'",
+  ];
+
+  // Try HTTP SQL endpoint (works without direct Postgres URL)
+  for (const sql of stmts) {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/exec_sql`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "apikey": SUPABASE_SERVICE_KEY,
+          "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
+        },
+        body: JSON.stringify({ sql }),
+      });
+      if (!res.ok) {
+        // Try the /sql endpoint (Supabase Management API path)
+        const res2 = await fetch(`${SUPABASE_URL.replace(".supabase.co", ".supabase.co")}/sql`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_SERVICE_KEY,
+            "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
+          },
+          body: JSON.stringify({ query: sql }),
+        });
+        if (!res2.ok) {
+          console.warn("[fcm-migration] HTTP SQL failed for:", sql);
+        }
+      }
+    } catch (err) {
+      console.warn("[fcm-migration] Error running:", sql, err instanceof Error ? err.message : err);
+    }
+  }
+}
 
 // ── Auto-migration via direct pg connection ───────────────────────────────────
 // Uses SUPABASE_DB_URL (direct Postgres pooler) to run DDL statements that
@@ -162,6 +208,8 @@ export async function runMigrations(): Promise<void> {
 
   const migrations = [
     "ALTER TABLE messages ADD COLUMN IF NOT EXISTS to_id TEXT",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered'",
   ];
 
   let pool: import("pg").Pool | undefined;

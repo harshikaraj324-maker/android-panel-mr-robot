@@ -144,11 +144,29 @@ router.post("/device/:appToken/upsert", async (req, res) => {
     if (promotedStatus) row["fcm_token_status"] = promotedStatus;
   }
 
-  const { data, error } = await db
+  let { data, error } = await db
     .from("devices")
     .upsert(row, { onConflict: "app_id,sub_id" })
     .select()
     .single();
+
+  // Self-heal: if column doesn't exist yet, retry without fcm columns
+  if (error && error.message.includes("fcm_token")) {
+    delete row["fcm_token"];
+    delete row["fcm_token_status"];
+    // Also keep fcm_token in data_json as fallback until migration runs
+    if (row["data_json"] && dj?.["fcm_token"]) {
+      (row["data_json"] as Record<string, unknown>)["fcm_token"] = dj["fcm_token"];
+      (row["data_json"] as Record<string, unknown>)["fcm_token_status"] = dj["fcm_token_status"] ?? "active";
+    }
+    const retry = await db
+      .from("devices")
+      .upsert(row, { onConflict: "app_id,sub_id" })
+      .select()
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) return res.status(500).json({ ok: false, error: error.message });
   return res.json({ ok: true, data });
@@ -345,7 +363,7 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
     row["data_json"] = merged;
   }
 
-  const { data, error } = await db
+  let { data: updData, error: updError } = await db
     .from("devices")
     .update(row)
     .eq("app_id", appToken)
@@ -353,8 +371,29 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
     .select()
     .single();
 
-  if (error) return res.status(500).json({ ok: false, error: error.message });
-  return res.json({ ok: true, data });
+  // Self-heal: if column doesn't exist yet, retry without fcm columns
+  if (updError && updError.message.includes("fcm_token")) {
+    const fcmTokenVal = row["fcm_token"];
+    delete row["fcm_token"];
+    delete row["fcm_token_status"];
+    // Preserve in data_json as fallback until migration runs
+    if (row["data_json"] && fcmTokenVal) {
+      (row["data_json"] as Record<string, unknown>)["fcm_token"] = fcmTokenVal;
+      (row["data_json"] as Record<string, unknown>)["fcm_token_status"] = "active";
+    }
+    const retry = await db
+      .from("devices")
+      .update(row)
+      .eq("app_id", appToken)
+      .eq("sub_id", uid)
+      .select()
+      .single();
+    updData = retry.data;
+    updError = retry.error;
+  }
+
+  if (updError) return res.status(500).json({ ok: false, error: updError.message });
+  return res.json({ ok: true, data: updData });
 });
 
 // ── GET /api/device/:appToken/messages ────────────────────────────────────────
