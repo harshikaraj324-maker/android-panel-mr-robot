@@ -196,7 +196,7 @@ class SupabaseApi() {
     // ════════════════════════════════════════════════════════════════════════
 
     /** Return true for real device rows; skip admin/config rows. */
-    private fun isRealDeviceRow(uid: String, dataType: String): Boolean {
+    fun isRealDeviceRow(uid: String, dataType: String): Boolean {
         if (uid.isBlank()) return false
         if (uid == "admin_config_main" || uid.startsWith("admin_")) return false
         if (dataType == "admin_config") return false
@@ -251,7 +251,7 @@ class SupabaseApi() {
         )
     }
 
-    private fun parseDeviceStatusRow(row: JSONObject): DeviceStatus? {
+    fun parseDeviceStatusRow(row: JSONObject): DeviceStatus? {
         val uid = row.optString("sub_id", row.optString("uid", "")).trim()
         if (uid.isBlank()) return null
 
@@ -275,7 +275,7 @@ class SupabaseApi() {
         )
     }
 
-    private fun parseBatteryRow(row: JSONObject): BatteryInfo? {
+    fun parseBatteryRow(row: JSONObject): BatteryInfo? {
         val uid = row.optString("sub_id", row.optString("uid", "")).trim()
         if (uid.isBlank()) return null
         val dj = djFrom(row)
@@ -290,6 +290,18 @@ class SupabaseApi() {
             health      = batt.optString("health", "").ifBlank { null },
             timestamp   = parseIsoToMs(row.optString("updated_at", "")),
         )
+    }
+
+    /**
+     * Returns Pair(uid, isStarred) from a realtime row.
+     * Used by DeviceActivity.handleRealtimeUpsert().
+     */
+    fun parseStarredRow(row: JSONObject): Pair<String, Boolean>? {
+        val uid = row.optString("sub_id", row.optString("uid", "")).trim()
+        if (uid.isBlank()) return null
+        val dj = djFrom(row)
+        val starred = dj.optBoolean("starred", false)
+        return Pair(uid, starred)
     }
 
     fun parseSmsRow(row: JSONObject): SmsLog? {
