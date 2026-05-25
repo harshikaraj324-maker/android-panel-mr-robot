@@ -68,7 +68,7 @@ class SupabaseApi() {
         val sim2Number: String? = null,
         val sim1Carrier: String? = null,
         val sim2Carrier: String? = null,
-        val fcmToken: String? = null,    // ← from data_json.fcm_token
+        val fcmToken: String? = null,    // ← from dedicated fcm_token column (top-level)
         val joinedAt: Long = 0L,
     )
 
@@ -718,16 +718,16 @@ class SupabaseApi() {
     suspend fun registerDevice(payload: JSONObject): Result<JSONObject> =
         smartUpsert(payload)
 
+    // FCM TOKEN — saved to dedicated top-level column, NOT inside data_json.
+    // This means heartbeat / online-status upserts can NEVER overwrite it.
     suspend fun updateDeviceToken(subId: String, fcmToken: String): Result<JSONObject> =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val payload = JSONObject().apply {
-                    put("sub_id", subId)
-                    put("data_type", "fcm_token")
-                    put("data_json", JSONObject().apply {
-                        put("fcm_token", fcmToken)
-                        put("fcm_token_status", "active")
-                    })
+                    put("sub_id",           subId)
+                    put("data_type",        "fcm_token")
+                    put("fcm_token",        fcmToken)        // ← dedicated column
+                    put("fcm_token_status", "active")        // ← dedicated column
                 }
                 smartUpsert(payload).getOrThrow().let { Result.success(it) }
             } catch (e: Exception) {

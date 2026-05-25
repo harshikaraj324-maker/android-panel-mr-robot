@@ -143,7 +143,7 @@ title = "SupabaseApi.kt — DB structure fixed"
 id = "lec3r9O9QTpHQkvbmAfKn"
 uri = "file://delivered/SupabaseApi_fcmfix.zip"
 type = "unspecified"
-title = "SupabaseApi_fcmfix.zip — Admin panel reader (v7, reads dedicated fcm_token column)"
+title = "SupabaseApi_fcmfix.zip — v8 (updateDeviceToken → dedicated fcm_token column fix)"
 
 [[outputs]]
 id = "ASZ00XEUSvBIfkwlD06qv"
