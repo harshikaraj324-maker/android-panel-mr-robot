@@ -31,7 +31,7 @@ app.use(cors({
   origin: (origin, callback) => callback(null, true),
   credentials: true,
   methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-admin-token"],
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
