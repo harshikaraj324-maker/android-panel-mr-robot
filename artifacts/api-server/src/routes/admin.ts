@@ -13,8 +13,10 @@ import {
 } from "../lib/proxy.js";
 
 const router = Router();
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, "../../../../.local/data");
+// Store persistent data in workspace root so it survives container/server restarts.
+// NOTE: __dirname resolves to the dist/ folder (esbuild bundle), which can be
+//       wiped on each build. process.cwd() is always the workspace root.
+const DATA_DIR = path.join(process.cwd(), ".local", "data");
 
 // ── Local auth helpers (password stays local, not in DB) ─────────────────────
 function ensureDir() { fs.mkdirSync(DATA_DIR, { recursive: true }); }

@@ -97,10 +97,10 @@ router.get("/device/:appToken/stream", async (req, res) => {
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  // Keep-alive ping every 25s
+  // Keep-alive ping every 15s — well under any proxy/OkHttp read timeout
   const ping = setInterval(() => {
     try { res.write(": ping\n\n"); } catch { clearInterval(ping); }
-  }, 25000);
+  }, 15000);
 
   addDeviceSseClient(appToken, res);
 
