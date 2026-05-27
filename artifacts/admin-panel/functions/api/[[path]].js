@@ -2,7 +2,9 @@ const REPLIT_API = "https://0c4449ed-d5b0-42f2-9674-dca9c719e186-00-39bfl9q91p2e
 
 export async function onRequest(context) {
   const url = new URL(context.request.url);
-  const targetUrl = REPLIT_API + url.pathname + url.search;
+  // Normalize double slashes (Android BACKEND_ROOT trailing slash + "/api/..." prefix)
+  const normalizedPath = url.pathname.replace(/\/\/+/g, "/");
+  const targetUrl = REPLIT_API + normalizedPath + url.search;
 
   const headers = new Headers();
   for (const [key, value] of context.request.headers.entries()) {
