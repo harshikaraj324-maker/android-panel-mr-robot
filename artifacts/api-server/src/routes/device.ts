@@ -28,18 +28,44 @@ async function verifyApp(
   appToken: string,
   req?: Request,
 ): Promise<{ ok: boolean; error?: string }> {
-  const { data, error } = await db
+  // First try the full query including HMAC columns.
+  // If those columns don't exist yet (migration pending), Supabase/PostgREST
+  // returns a column-not-found error — fall back to basic query so existing
+  // apps keep working while the admin runs the DB migration.
+  let data: { status: string; expires_at: string | null; signing_required?: boolean; secret_key?: string | null } | null = null;
+
+  const { data: fullData, error: fullError } = await db
     .from("apps")
     .select("status, expires_at, signing_required, secret_key")
     .eq("app_id", appToken)
     .single();
 
-  if (error || !data) return { ok: false, error: "App ID not found" };
+  if (fullError) {
+    // If it's a column-not-found error (migration not yet run), retry with basic columns
+    const msg = (fullError as { message?: string }).message ?? "";
+    const isColumnMissing = msg.includes("secret_key") || msg.includes("signing_required") || msg.includes("column") || (fullError as { code?: string }).code === "42703";
+    if (isColumnMissing) {
+      const { data: basicData, error: basicErr } = await db
+        .from("apps")
+        .select("status, expires_at")
+        .eq("app_id", appToken)
+        .single();
+      if (basicErr || !basicData) return { ok: false, error: "App ID not found" };
+      data = basicData as typeof data;
+    } else {
+      return { ok: false, error: "App ID not found" };
+    }
+  } else {
+    data = fullData;
+  }
+
+  if (!data) return { ok: false, error: "App ID not found" };
   if (data.status === "disabled") return { ok: false, error: "App ID is disabled" };
   if (data.status === "inactive") return { ok: false, error: "App ID is inactive" };
   if (data.expires_at && new Date(data.expires_at) < new Date()) return { ok: false, error: "App ID expired" };
 
   // ── HMAC signature check (only when signing is enabled for this app) ─────────
+  // Skipped automatically if signing_required column doesn't exist yet
   if (data.signing_required && data.secret_key && req) {
     const ts  = req.headers["x-timestamp"] as string | undefined;
     const sig = req.headers["x-signature"] as string | undefined;
@@ -50,7 +76,6 @@ async function verifyApp(
     if (!isTimestampFresh(ts)) {
       return { ok: false, error: "Request timestamp expired (max 5 minutes allowed)" };
     }
-    // Path without query string
     const path = req.path;
     if (!verifyHmac(data.secret_key as string, ts, req.method, path, sig)) {
       return { ok: false, error: "Invalid request signature" };
