@@ -4,7 +4,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import crypto from "crypto";
 import { db, SETUP_SQL } from "../lib/supabase.js";
-import { generateSecret } from "../lib/hmac.js";
 import {
   sseClients,
   proxyMemLog, proxyMemStats, resetTodayStats,
@@ -306,28 +305,12 @@ router.get("/admin/app-ids", requireAuth, async (_req, res) => {
 router.post("/admin/app-ids", requireAuth, async (req, res) => {
   const { app_id, pin = "1234", name, expires_at } = req.body as { app_id: string; pin?: string; name?: string; expires_at?: string };
   if (!app_id) return res.status(400).json({ error: "app_id required" });
-  const secret_key = generateSecret();
-  const { data, error } = await db.from("apps").insert({ app_id, name: name ?? null, pin, status: "active", secret_key, signing_required: false, created_at: new Date().toISOString(), expires_at: expires_at ?? new Date(Date.now() + 30 * 864e5).toISOString() }).select().single();
+  const { data, error } = await db.from("apps").insert({ app_id, name: name ?? null, pin, status: "active", created_at: new Date().toISOString(), expires_at: expires_at ?? new Date(Date.now() + 30 * 864e5).toISOString() }).select().single();
   if (error?.code === "23505") return res.status(409).json({ error: `"${app_id}" already exists` });
   if (dbErr(res, error)) return;
   res.status(201).json(data);
 });
 
-// ── Rotate HMAC secret key ─────────────────────────────────────────────────────
-router.post("/admin/app-ids/:appId/rotate-secret", requireAuth, async (req, res) => {
-  const secret_key = generateSecret();
-  const { error } = await db.from("apps").update({ secret_key }).eq("app_id", req.params.appId);
-  if (dbErr(res, error)) return;
-  res.json({ ok: true, secret_key });
-});
-
-// ── Toggle HMAC signing enforcement ───────────────────────────────────────────
-router.patch("/admin/app-ids/:appId/signing", requireAuth, async (req, res) => {
-  const { signing_required } = req.body as { signing_required: boolean };
-  const { error } = await db.from("apps").update({ signing_required: !!signing_required }).eq("app_id", req.params.appId);
-  if (dbErr(res, error)) return;
-  res.json({ ok: true });
-});
 
 router.patch("/admin/app-ids/:appId/password", requireAuth, async (req, res) => {
   const { new_password } = req.body as { new_password: string };

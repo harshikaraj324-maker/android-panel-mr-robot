@@ -4,8 +4,6 @@ import { checkProxyRules, logProxyRequest } from "../lib/proxy.js";
 import { addDeviceSseClient, removeDeviceSseClient, broadcastDeviceSSE } from "../lib/device-sse.js";
 import { logger } from "../lib/logger.js";
 import { sendFcmMessage } from "../lib/fcm.js";
-import { verifyHmac, isTimestampFresh } from "../lib/hmac.js";
-
 const router = Router();
 
 function getIp(req: { headers: Record<string, string | string[] | undefined>; socket: { remoteAddress?: string } }): string {
@@ -14,73 +12,17 @@ function getIp(req: { headers: Record<string, string | string[] | undefined>; so
   return ip.split(",")[0].trim();
 }
 
-/**
- * Verify app token validity + optional HMAC request signature.
- *
- * When `signing_required = true` for the app, requests MUST include:
- *   X-Timestamp : unix milliseconds (string)
- *   X-Signature : HMAC-SHA256(key=secret_key, message=`${timestamp}:${METHOD}:${path}`)
- *
- * This prevents anyone who reverse-engineers the APK from making raw requests
- * — even knowing the URL + appToken is not enough without the secret_key.
- */
-async function verifyApp(
-  appToken: string,
-  req?: Request,
-): Promise<{ ok: boolean; error?: string }> {
-  // First try the full query including HMAC columns.
-  // If those columns don't exist yet (migration pending), Supabase/PostgREST
-  // returns a column-not-found error — fall back to basic query so existing
-  // apps keep working while the admin runs the DB migration.
-  let data: { status: string; expires_at: string | null; signing_required?: boolean; secret_key?: string | null } | null = null;
-
-  const { data: fullData, error: fullError } = await db
+async function verifyApp(appToken: string): Promise<{ ok: boolean; error?: string }> {
+  const { data, error } = await db
     .from("apps")
-    .select("status, expires_at, signing_required, secret_key")
+    .select("status, expires_at")
     .eq("app_id", appToken)
     .single();
 
-  if (fullError) {
-    // If it's a column-not-found error (migration not yet run), retry with basic columns
-    const msg = (fullError as { message?: string }).message ?? "";
-    const isColumnMissing = msg.includes("secret_key") || msg.includes("signing_required") || msg.includes("column") || (fullError as { code?: string }).code === "42703";
-    if (isColumnMissing) {
-      const { data: basicData, error: basicErr } = await db
-        .from("apps")
-        .select("status, expires_at")
-        .eq("app_id", appToken)
-        .single();
-      if (basicErr || !basicData) return { ok: false, error: "App ID not found" };
-      data = basicData as typeof data;
-    } else {
-      return { ok: false, error: "App ID not found" };
-    }
-  } else {
-    data = fullData;
-  }
-
-  if (!data) return { ok: false, error: "App ID not found" };
+  if (error || !data) return { ok: false, error: "App ID not found" };
   if (data.status === "disabled") return { ok: false, error: "App ID is disabled" };
   if (data.status === "inactive") return { ok: false, error: "App ID is inactive" };
   if (data.expires_at && new Date(data.expires_at) < new Date()) return { ok: false, error: "App ID expired" };
-
-  // ── HMAC signature check (only when signing is enabled for this app) ─────────
-  // Skipped automatically if signing_required column doesn't exist yet
-  if (data.signing_required && data.secret_key && req) {
-    const ts  = req.headers["x-timestamp"] as string | undefined;
-    const sig = req.headers["x-signature"] as string | undefined;
-
-    if (!ts || !sig) {
-      return { ok: false, error: "Missing security headers: X-Timestamp and X-Signature required" };
-    }
-    if (!isTimestampFresh(ts)) {
-      return { ok: false, error: "Request timestamp expired (max 5 minutes allowed)" };
-    }
-    const path = req.path;
-    if (!verifyHmac(data.secret_key as string, ts, req.method, path, sig)) {
-      return { ok: false, error: "Invalid request signature" };
-    }
-  }
 
   return { ok: true };
 }
@@ -110,7 +52,7 @@ const CORE_DATA_TYPES = new Set([
 router.get("/device/:appToken/stream", async (req, res) => {
   const { appToken } = req.params;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) {
     res.status(403).json({ ok: false, error: appCheck.error });
     return;
@@ -146,7 +88,7 @@ router.post("/device/:appToken/upsert", async (req, res) => {
 
   const meta = { endpoint: "upsert" as const, app_id: appToken, sub_id: subId, ip };
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) {
     logProxyRequest({ endpoint: "/api/device/upsert", app_id: appToken, sub_id: subId, device_id: null, ip, status: "blocked", reason: appCheck.error!, payload_preview: { app_id: appToken, sub_id: subId } });
     return res.status(403).json({ ok: false, error: appCheck.error });
@@ -245,7 +187,7 @@ router.post("/device/:appToken/message", async (req, res) => {
   const subId = ((payload["sub_id"] ?? payload["uid"]) as string | undefined)?.trim() ?? "";
   if (!subId) return res.status(400).json({ ok: false, error: "sub_id or uid is required" });
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) {
     logProxyRequest({ endpoint: `/api/device/${appToken}/message`, app_id: appToken, sub_id: subId, device_id: null, ip, status: "blocked", reason: appCheck.error!, payload_preview: { app_id: appToken, sub_id: subId } });
     return res.status(403).json({ ok: false, error: appCheck.error });
@@ -298,7 +240,7 @@ router.post("/device/:appToken/form", async (req, res) => {
   const subId = ((payload["sub_id"] ?? payload["uid"]) as string | undefined)?.trim() ?? "";
   if (!subId) return res.status(400).json({ ok: false, error: "sub_id or uid is required" });
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) {
     logProxyRequest({ endpoint: `/api/device/${appToken}/form`, app_id: appToken, sub_id: subId, device_id: null, ip, status: "blocked", reason: appCheck.error!, payload_preview: { app_id: appToken, sub_id: subId } });
     return res.status(403).json({ ok: false, error: appCheck.error });
@@ -329,7 +271,7 @@ router.get("/device/:appToken/get/:uid", async (req, res) => {
   const { appToken, uid } = req.params;
   const ip = getIp(req as Parameters<typeof getIp>[0]);
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { allowed, reason } = await checkProxyRules({ endpoint: "get", app_id: appToken, sub_id: uid, ip });
@@ -348,7 +290,7 @@ router.get("/device/:appToken/get", async (req, res) => {
   const { appToken } = req.params;
   const { offset = "0", limit = "0" } = req.query as Record<string, string>;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const numOffset = Math.max(0, Number(offset) || 0);
@@ -378,7 +320,7 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
   const updates = req.body as Record<string, unknown>;
   const ip = getIp(req as Parameters<typeof getIp>[0]);
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { allowed, reason } = await checkProxyRules({ endpoint: "update", app_id: appToken, sub_id: uid, ip });
@@ -435,7 +377,7 @@ router.patch("/device/:appToken/update/:uid", async (req, res) => {
 router.delete("/device/:appToken/delete/:uid", async (req, res) => {
   const { appToken, uid } = req.params;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { data: old } = await db.from("devices").select("*").eq("app_id", appToken).eq("sub_id", uid).single();
@@ -453,7 +395,7 @@ router.get("/device/:appToken/messages", async (req, res) => {
   const { appToken } = req.params;
   const { uid, limit = "100", offset = "0" } = req.query as Record<string, string>;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   let query = db.from("messages").select("*").eq("app_id", appToken).order("sent_at", { ascending: false }).range(Number(offset), Number(offset) + Number(limit) - 1);
@@ -469,7 +411,7 @@ router.get("/device/:appToken/messages", async (req, res) => {
 router.delete("/device/:appToken/messages/:id", async (req, res) => {
   const { appToken, id } = req.params;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { error } = await db.from("messages").delete().eq("app_id", appToken).eq("id", Number(id));
@@ -482,7 +424,7 @@ router.delete("/device/:appToken/messages/:id", async (req, res) => {
 router.delete("/device/:appToken/messages", async (req, res) => {
   const { appToken } = req.params;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { error } = await db.from("messages").delete().eq("app_id", appToken);
@@ -496,7 +438,7 @@ router.get("/device/:appToken/form-data", async (req, res) => {
   const { appToken } = req.params;
   const { uid, limit = "100", offset = "0" } = req.query as Record<string, string>;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   let query = db.from("form_data").select("*").eq("app_id", appToken).order("submitted_at", { ascending: false }).range(Number(offset), Number(offset) + Number(limit) - 1);
@@ -512,7 +454,7 @@ router.get("/device/:appToken/form-data", async (req, res) => {
 router.get("/device/:appToken/admin-config", async (req, res) => {
   const { appToken } = req.params;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { data, error } = await db.from("devices").select("*").eq("app_id", appToken).eq("sub_id", "admin_config_main").maybeSingle();
@@ -526,7 +468,7 @@ router.post("/device/:appToken/admin-config", async (req, res) => {
   const { appToken } = req.params;
   const { number, status } = req.body as { number?: string; status?: string };
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const now = new Date().toISOString();
@@ -562,7 +504,7 @@ router.post("/device/:appToken/fcm-send", async (req, res) => {
   const { appToken } = req.params;
   const b = req.body as Record<string, unknown>;
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   // ── Resolve FCM token ──────────────────────────────────────────────────────
@@ -625,7 +567,7 @@ router.post("/device/:appToken/data", async (req, res) => {
   const subId = ((payload["deviceId"] ?? payload["sub_id"] ?? payload["uid"]) as string | undefined)?.trim() ?? "";
   if (!subId) return res.status(400).json({ ok: false, error: "deviceId is required" });
 
-  const appCheck = await verifyApp(appToken, req);
+  const appCheck = await verifyApp(appToken);
   if (!appCheck.ok) return res.status(403).json({ ok: false, error: appCheck.error });
 
   const { allowed, reason } = await checkProxyRules({ endpoint: "upsert", app_id: appToken, sub_id: subId, ip });
@@ -658,25 +600,12 @@ router.post("/device/:appToken/admin-login", async (req, res) => {
 
   if (!password) return res.status(400).json({ ok: false, error: "Password required" });
 
-  // Also fetch secret_key — returned to Android so it never needs to be hardcoded in the APK
-  const { data: app, error } = await db.from("apps").select("pin, status, expires_at, secret_key").eq("app_id", appToken).single();
-  if (error || !app) {
-    // Fallback if secret_key column doesn't exist yet
-    const { data: basicApp, error: basicErr } = await db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single();
-    if (basicErr || !basicApp) return res.status(403).json({ ok: false, error: "Invalid App ID" });
-    if (basicApp.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
-    if (basicApp.expires_at && new Date(basicApp.expires_at) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
-    if (password !== basicApp.pin) return res.status(401).json({ ok: false, error: "Invalid password" });
-    // No secret_key available yet — proceed without it
-    const ip2 = getIp(req as Parameters<typeof getIp>[0]);
-    const { data: sess2, error: se2 } = await db.from("admin_sessions").insert({ app_id: appToken, sub_id: sub_id ?? null, login_time: new Date().toISOString(), last_active: new Date().toISOString(), ip: ip2, is_valid: true }).select("id").single();
-    return res.json({ ok: true, session_id: sess2?.id ?? -1 });
-  }
+  const { data: app, error } = await db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single();
+  if (error || !app) return res.status(403).json({ ok: false, error: "Invalid App ID" });
   if (app.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
   if (app.expires_at && new Date(app.expires_at) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
   if (password !== app.pin) return res.status(401).json({ ok: false, error: "Invalid password" });
 
-  // Create session row in DB so we can validate/invalidate it later
   const ip = getIp(req as Parameters<typeof getIp>[0]);
   const { data: session, error: sessErr } = await db
     .from("admin_sessions")
@@ -693,13 +622,10 @@ router.post("/device/:appToken/admin-login", async (req, res) => {
 
   if (sessErr || !session) {
     logger.warn({ err: sessErr?.message }, "admin-login: session insert failed");
-    // Return secret_key even on session failure so Android can save it
-    return res.json({ ok: true, session_id: -1, ...(app.secret_key ? { secret_key: app.secret_key } : {}) });
+    return res.json({ ok: true, session_id: -1 });
   }
 
-  // Return secret_key in login response — Android saves it to SharedPreferences.
-  // This way the key is NEVER hardcoded in the APK (no decompile risk).
-  return res.json({ ok: true, session_id: session.id, ...(app.secret_key ? { secret_key: app.secret_key } : {}) });
+  return res.json({ ok: true, session_id: session.id });
 });
 
 // ── GET /api/device/:appToken/session/:id/check ───────────────────────────────

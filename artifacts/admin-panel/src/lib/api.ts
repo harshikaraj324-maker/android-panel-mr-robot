@@ -27,8 +27,6 @@ export interface AppIdRow {
   status: "active" | "inactive" | "disabled";
   created_at: string; expires_at: string;
   device_count: number; active_count: number; active_sessions: number;
-  secret_key: string | null;
-  signing_required: boolean;
 }
 export interface AppIdListResponse { needs_setup: boolean; rows: AppIdRow[]; }
 export interface DeviceRow {
@@ -103,10 +101,6 @@ export const api = {
   setStatus:     (appId: string, status: string) =>
     req<{ ok: boolean }>(`/admin/app-ids/${appId}/toggle`, { method: "PATCH", body: JSON.stringify({ status }) }),
   deleteAppId:   (appId: string) => req<{ ok: boolean }>(`/admin/app-ids/${appId}`, { method: "DELETE" }),
-  rotateSecret:  (appId: string) => req<{ ok: boolean; secret_key: string }>(`/admin/app-ids/${appId}/rotate-secret`, { method: "POST" }),
-  setSigning:    (appId: string, signing_required: boolean) =>
-    req<{ ok: boolean }>(`/admin/app-ids/${appId}/signing`, { method: "PATCH", body: JSON.stringify({ signing_required }) }),
-
   // Devices
   listDevices:   (filters?: { app_id?: string; sub_id?: string }) => {
     const p = new URLSearchParams();
