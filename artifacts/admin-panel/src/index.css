@@ -67,60 +67,61 @@
 }
 
 :root {
-  --button-outline: rgba(0,0,0,.10);
-  --badge-outline: rgba(0,0,0,.05);
-  --opaque-button-border-intensity: -8;
-  --elevate-1: rgba(0,0,0,.03);
-  --elevate-2: rgba(0,0,0,.08);
+  --button-outline: rgba(0,212,255,.15);
+  --badge-outline: rgba(0,212,255,.08);
+  --opaque-button-border-intensity: 9;
+  --elevate-1: rgba(0,212,255,.04);
+  --elevate-2: rgba(0,212,255,.09);
 
-  --background: 218 25% 96%;
-  --foreground: 222 47% 11%;
-  --border: 220 20% 88%;
-  --card: 0 0% 100%;
-  --card-foreground: 222 47% 11%;
-  --card-border: 220 20% 88%;
-  --sidebar: 222 47% 11%;
-  --sidebar-foreground: 210 40% 90%;
-  --sidebar-border: 222 40% 18%;
-  --sidebar-primary: 217 91% 60%;
-  --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 222 40% 18%;
-  --sidebar-accent-foreground: 210 40% 90%;
-  --sidebar-ring: 217 91% 60%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 222 47% 11%;
-  --popover-border: 220 20% 88%;
-  --primary: 217 91% 60%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 220 14% 93%;
-  --secondary-foreground: 222 47% 11%;
-  --muted: 220 14% 93%;
-  --muted-foreground: 215 16% 47%;
-  --accent: 217 91% 60%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 84% 60%;
+  /* ── Mr Robot dark cyberpunk palette ── */
+  --background: 222 47% 5%;
+  --foreground: 195 80% 92%;
+  --border: 220 30% 14%;
+  --card: 222 40% 8%;
+  --card-foreground: 195 80% 92%;
+  --card-border: 220 30% 14%;
+  --sidebar: 222 50% 4%;
+  --sidebar-foreground: 195 60% 82%;
+  --sidebar-border: 220 30% 10%;
+  --sidebar-primary: 191 100% 50%;
+  --sidebar-primary-foreground: 222 47% 5%;
+  --sidebar-accent: 220 35% 10%;
+  --sidebar-accent-foreground: 195 60% 82%;
+  --sidebar-ring: 191 100% 50%;
+  --popover: 222 40% 8%;
+  --popover-foreground: 195 80% 92%;
+  --popover-border: 220 30% 14%;
+  --primary: 191 100% 50%;
+  --primary-foreground: 222 47% 5%;
+  --secondary: 220 30% 12%;
+  --secondary-foreground: 195 80% 92%;
+  --muted: 220 30% 10%;
+  --muted-foreground: 215 20% 45%;
+  --accent: 155 100% 50%;
+  --accent-foreground: 222 47% 5%;
+  --destructive: 0 84% 55%;
   --destructive-foreground: 0 0% 100%;
-  --input: 220 20% 88%;
-  --ring: 217 91% 60%;
-  --chart-1: 217 91% 60%;
-  --chart-2: 142 76% 36%;
-  --chart-3: 38 92% 50%;
-  --chart-4: 280 65% 60%;
+  --input: 220 30% 12%;
+  --ring: 191 100% 50%;
+  --chart-1: 191 100% 50%;
+  --chart-2: 155 100% 45%;
+  --chart-3: 38 92% 55%;
+  --chart-4: 280 65% 65%;
   --chart-5: 0 84% 60%;
 
   --app-font-sans: 'Inter', system-ui, sans-serif;
   --app-font-serif: Georgia, serif;
   --app-font-mono: 'JetBrains Mono', Menlo, monospace;
-  --radius: .375rem;
+  --radius: .5rem;
 
-  --shadow-2xs: 0 1px 2px 0 rgba(0,0,0,.05);
-  --shadow-xs: 0 1px 3px 0 rgba(0,0,0,.08);
-  --shadow-sm: 0 2px 4px 0 rgba(0,0,0,.06);
-  --shadow: 0 4px 6px -1px rgba(0,0,0,.08);
-  --shadow-md: 0 4px 8px -2px rgba(0,0,0,.10);
-  --shadow-lg: 0 8px 16px -4px rgba(0,0,0,.12);
-  --shadow-xl: 0 16px 32px -8px rgba(0,0,0,.14);
-  --shadow-2xl: 0 24px 48px -12px rgba(0,0,0,.18);
+  --shadow-2xs: 0 1px 2px 0 rgba(0,0,0,.4);
+  --shadow-xs: 0 1px 3px 0 rgba(0,0,0,.5);
+  --shadow-sm: 0 2px 4px 0 rgba(0,0,0,.45);
+  --shadow: 0 4px 6px -1px rgba(0,0,0,.5);
+  --shadow-md: 0 4px 8px -2px rgba(0,0,0,.55);
+  --shadow-lg: 0 8px 16px -4px rgba(0,212,255,.08), 0 8px 16px -4px rgba(0,0,0,.6);
+  --shadow-xl: 0 16px 32px -8px rgba(0,212,255,.12), 0 16px 32px -8px rgba(0,0,0,.7);
+  --shadow-2xl: 0 24px 48px -12px rgba(0,212,255,.15), 0 24px 48px -12px rgba(0,0,0,.8);
   --tracking-normal: 0em;
   --spacing: 0.25rem;
 
@@ -140,56 +141,57 @@
   --destructive-border: hsl(from hsl(var(--destructive)) h s calc(l + var(--opaque-button-border-intensity)) / alpha);
 }
 
+/* Force dark theme always — Mr Robot panel is always dark */
 .dark {
-  --button-outline: rgba(255,255,255,.10);
-  --badge-outline: rgba(255,255,255,.05);
+  --button-outline: rgba(0,212,255,.15);
+  --badge-outline: rgba(0,212,255,.08);
   --opaque-button-border-intensity: 9;
-  --elevate-1: rgba(255,255,255,.04);
-  --elevate-2: rgba(255,255,255,.09);
+  --elevate-1: rgba(0,212,255,.04);
+  --elevate-2: rgba(0,212,255,.09);
 
-  --background: 222 47% 9%;
-  --foreground: 210 40% 96%;
-  --border: 222 40% 18%;
-  --card: 222 40% 13%;
-  --card-foreground: 210 40% 96%;
-  --card-border: 222 40% 20%;
-  --sidebar: 222 47% 7%;
-  --sidebar-foreground: 210 40% 90%;
-  --sidebar-border: 222 40% 14%;
-  --sidebar-primary: 217 91% 60%;
-  --sidebar-primary-foreground: 0 0% 100%;
-  --sidebar-accent: 222 40% 14%;
-  --sidebar-accent-foreground: 210 40% 90%;
-  --sidebar-ring: 217 91% 60%;
-  --popover: 222 40% 13%;
-  --popover-foreground: 210 40% 96%;
-  --popover-border: 222 40% 20%;
-  --primary: 217 91% 60%;
-  --primary-foreground: 0 0% 100%;
-  --secondary: 222 40% 18%;
-  --secondary-foreground: 210 40% 96%;
-  --muted: 222 40% 16%;
-  --muted-foreground: 215 20% 55%;
-  --accent: 217 91% 60%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 72% 51%;
+  --background: 222 47% 5%;
+  --foreground: 195 80% 92%;
+  --border: 220 30% 14%;
+  --card: 222 40% 8%;
+  --card-foreground: 195 80% 92%;
+  --card-border: 220 30% 14%;
+  --sidebar: 222 50% 4%;
+  --sidebar-foreground: 195 60% 82%;
+  --sidebar-border: 220 30% 10%;
+  --sidebar-primary: 191 100% 50%;
+  --sidebar-primary-foreground: 222 47% 5%;
+  --sidebar-accent: 220 35% 10%;
+  --sidebar-accent-foreground: 195 60% 82%;
+  --sidebar-ring: 191 100% 50%;
+  --popover: 222 40% 8%;
+  --popover-foreground: 195 80% 92%;
+  --popover-border: 220 30% 14%;
+  --primary: 191 100% 50%;
+  --primary-foreground: 222 47% 5%;
+  --secondary: 220 30% 12%;
+  --secondary-foreground: 195 80% 92%;
+  --muted: 220 30% 10%;
+  --muted-foreground: 215 20% 45%;
+  --accent: 155 100% 50%;
+  --accent-foreground: 222 47% 5%;
+  --destructive: 0 84% 55%;
   --destructive-foreground: 0 0% 100%;
-  --input: 222 40% 20%;
-  --ring: 217 91% 60%;
-  --chart-1: 217 91% 60%;
-  --chart-2: 142 76% 42%;
+  --input: 220 30% 12%;
+  --ring: 191 100% 50%;
+  --chart-1: 191 100% 50%;
+  --chart-2: 155 100% 45%;
   --chart-3: 38 92% 55%;
   --chart-4: 280 65% 65%;
   --chart-5: 0 84% 60%;
 
-  --shadow-2xs: 0 1px 2px 0 rgba(0,0,0,.3);
-  --shadow-xs: 0 1px 3px 0 rgba(0,0,0,.35);
-  --shadow-sm: 0 2px 4px 0 rgba(0,0,0,.3);
-  --shadow: 0 4px 6px -1px rgba(0,0,0,.35);
-  --shadow-md: 0 4px 8px -2px rgba(0,0,0,.4);
-  --shadow-lg: 0 8px 16px -4px rgba(0,0,0,.45);
-  --shadow-xl: 0 16px 32px -8px rgba(0,0,0,.5);
-  --shadow-2xl: 0 24px 48px -12px rgba(0,0,0,.6);
+  --shadow-2xs: 0 1px 2px 0 rgba(0,0,0,.4);
+  --shadow-xs: 0 1px 3px 0 rgba(0,0,0,.5);
+  --shadow-sm: 0 2px 4px 0 rgba(0,0,0,.45);
+  --shadow: 0 4px 6px -1px rgba(0,0,0,.5);
+  --shadow-md: 0 4px 8px -2px rgba(0,0,0,.55);
+  --shadow-lg: 0 8px 16px -4px rgba(0,212,255,.08), 0 8px 16px -4px rgba(0,0,0,.6);
+  --shadow-xl: 0 16px 32px -8px rgba(0,212,255,.12), 0 16px 32px -8px rgba(0,0,0,.7);
+  --shadow-2xl: 0 24px 48px -12px rgba(0,212,255,.15), 0 24px 48px -12px rgba(0,0,0,.8);
 }
 
 @layer base {
@@ -204,6 +206,12 @@
 @layer utilities {
   input[type="search"]::-webkit-search-cancel-button {
     @apply hidden;
+  }
+
+  [contenteditable][data-placeholder]:empty::before {
+    content: attr(data-placeholder);
+    color: hsl(var(--muted-foreground));
+    pointer-events: none;
   }
 
   .no-default-hover-elevate {}
