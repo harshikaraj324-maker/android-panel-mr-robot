@@ -658,8 +658,20 @@ router.post("/device/:appToken/admin-login", async (req, res) => {
 
   if (!password) return res.status(400).json({ ok: false, error: "Password required" });
 
-  const { data: app, error } = await db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single();
-  if (error || !app) return res.status(403).json({ ok: false, error: "Invalid App ID" });
+  // Also fetch secret_key — returned to Android so it never needs to be hardcoded in the APK
+  const { data: app, error } = await db.from("apps").select("pin, status, expires_at, secret_key").eq("app_id", appToken).single();
+  if (error || !app) {
+    // Fallback if secret_key column doesn't exist yet
+    const { data: basicApp, error: basicErr } = await db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single();
+    if (basicErr || !basicApp) return res.status(403).json({ ok: false, error: "Invalid App ID" });
+    if (basicApp.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
+    if (basicApp.expires_at && new Date(basicApp.expires_at) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
+    if (password !== basicApp.pin) return res.status(401).json({ ok: false, error: "Invalid password" });
+    // No secret_key available yet — proceed without it
+    const ip2 = getIp(req as Parameters<typeof getIp>[0]);
+    const { data: sess2, error: se2 } = await db.from("admin_sessions").insert({ app_id: appToken, sub_id: sub_id ?? null, login_time: new Date().toISOString(), last_active: new Date().toISOString(), ip: ip2, is_valid: true }).select("id").single();
+    return res.json({ ok: true, session_id: sess2?.id ?? -1 });
+  }
   if (app.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
   if (app.expires_at && new Date(app.expires_at) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
   if (password !== app.pin) return res.status(401).json({ ok: false, error: "Invalid password" });
@@ -680,12 +692,14 @@ router.post("/device/:appToken/admin-login", async (req, res) => {
     .single();
 
   if (sessErr || !session) {
-    // Session creation failed — still allow login but without session persistence
     logger.warn({ err: sessErr?.message }, "admin-login: session insert failed");
-    return res.json({ ok: true, session_id: -1 });
+    // Return secret_key even on session failure so Android can save it
+    return res.json({ ok: true, session_id: -1, ...(app.secret_key ? { secret_key: app.secret_key } : {}) });
   }
 
-  return res.json({ ok: true, session_id: session.id });
+  // Return secret_key in login response — Android saves it to SharedPreferences.
+  // This way the key is NEVER hardcoded in the APK (no decompile risk).
+  return res.json({ ok: true, session_id: session.id, ...(app.secret_key ? { secret_key: app.secret_key } : {}) });
 });
 
 // ── GET /api/device/:appToken/session/:id/check ───────────────────────────────
