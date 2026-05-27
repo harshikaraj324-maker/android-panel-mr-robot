@@ -1,6 +1,4 @@
-// On Replit: VITE_API_URL is not set → relative "/api" (same-domain proxy)
-// On Cloudflare Pages: VITE_API_URL = "https://your-api.replit.app" → absolute URL
-const BASE = (import.meta.env.VITE_API_URL?.replace(/\/$/, "") ?? "") + "/api";
+const BASE = "/api";
 
 // Token management
 export function getToken(): string | null { return localStorage.getItem("admin_token"); }
