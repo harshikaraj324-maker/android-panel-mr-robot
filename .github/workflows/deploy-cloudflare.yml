@@ -32,8 +32,11 @@ jobs:
 
       - name: Build admin panel (Cloudflare)
         run: pnpm --filter @workspace/admin-panel run build:cf
-        env:
-          VITE_API_URL: https://0c4449ed-d5b0-42f2-9674-dca9c719e186-00-39bfl9q91p2em.sisko.replit.dev
+
+      - name: Copy Pages Functions to dist
+        run: |
+          mkdir -p artifacts/admin-panel/dist/functions
+          cp -r artifacts/admin-panel/functions/. artifacts/admin-panel/dist/functions/
 
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/pages-action@v1
