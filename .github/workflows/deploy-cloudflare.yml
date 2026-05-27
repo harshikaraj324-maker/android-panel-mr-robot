@@ -33,17 +33,18 @@ jobs:
       - name: Build admin panel (Cloudflare)
         run: pnpm --filter @workspace/admin-panel run build:cf
 
-      - name: Copy Pages Functions to dist
+      - name: Stage Pages Functions at repo root
         run: |
-          mkdir -p artifacts/admin-panel/dist/functions
-          cp -r artifacts/admin-panel/functions/. artifacts/admin-panel/dist/functions/
+          mkdir -p functions/api
+          cp "artifacts/admin-panel/functions/api/[[path]].js" "functions/api/[[path]].js"
 
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/pages-action@v1
+      - name: Deploy to Cloudflare Pages (with Functions)
+        uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          projectName: android-panel-mr-robot
-          directory: artifacts/admin-panel/dist/public
-          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
+          command: >
+            pages deploy artifacts/admin-panel/dist/public
+            --project-name=android-panel-mr-robot
+            --branch=main
+            --commit-dirty=true
