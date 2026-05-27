@@ -155,15 +155,22 @@ ALTER TABLE devices ADD CONSTRAINT devices_app_id_sub_id_key UNIQUE (app_id, sub
 -- FCM token dedicated columns (replaces data_json.fcm_token)
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT '';
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered';
+
+-- ── HMAC request signing per app ──────────────────────────────────────────────
+-- secret_key: 64-char hex secret used to sign/verify requests
+-- signing_required: when TRUE, all device API calls must include valid HMAC headers
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS secret_key TEXT;
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS signing_required BOOLEAN NOT NULL DEFAULT FALSE;
 `.trim();
 
-// ── FCM columns migration via Supabase HTTP SQL endpoint ─────────────────────
-// Runs ALTER TABLE to add fcm_token / fcm_token_status columns to devices.
+// ── Startup column migrations via Supabase HTTP SQL endpoint ──────────────────
 // Safe to run every startup — ADD COLUMN IF NOT EXISTS is idempotent.
 export async function runFcmColumnsMigration(): Promise<void> {
   const stmts = [
     "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered'",
+    "ALTER TABLE apps ADD COLUMN IF NOT EXISTS secret_key TEXT",
+    "ALTER TABLE apps ADD COLUMN IF NOT EXISTS signing_required BOOLEAN NOT NULL DEFAULT FALSE",
   ];
 
   // Try HTTP SQL endpoint (works without direct Postgres URL)

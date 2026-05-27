@@ -6,7 +6,7 @@ import {
   Plus, Trash2, KeyRound, RefreshCw, ToggleLeft, ToggleRight,
   ChevronRight, Wand2, Clock, RotateCcw, CalendarPlus, Copy,
   Check, ExternalLink, ArrowRight, Loader2, ShieldAlert,
-  Eye, EyeOff,
+  Eye, EyeOff, ShieldCheck, ShieldOff, RotateCw, Lock,
 } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
@@ -270,6 +270,24 @@ export default function AppIds() {
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
 
+  // Rotate HMAC secret
+  const rotateMut = useMutation({
+    mutationFn: (appId: string) => api.rotateSecret(appId),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ["app-ids"] });
+      toast({ title: "Secret Rotated!", description: "New secret generated. Update your APK." });
+    },
+    onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
+  });
+
+  // Toggle HMAC signing
+  const signingMut = useMutation({
+    mutationFn: ({ appId, signing_required }: { appId: string; signing_required: boolean }) =>
+      api.setSigning(appId, signing_required),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["app-ids"] }),
+    onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
+  });
+
   function copyId(id: string) {
     navigator.clipboard.writeText(id).then(() => {
       setCopiedId(id);
@@ -415,6 +433,66 @@ export default function AppIds() {
                         onClick={() => setDeleteFor(app.app_id)}>
                         <Trash2 className="w-3.5 h-3.5" />
                       </Button>
+                    </div>
+
+                    {/* ── HMAC Request Signing ──────────────────────────────── */}
+                    <div className="rounded-md border border-border/60 bg-muted/30 p-3 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <Lock className="w-3.5 h-3.5 text-cyan-400" />
+                          <span className="text-xs font-semibold text-cyan-400 tracking-wide">REQUEST SIGNING</span>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className={`h-6 px-2 text-[10px] font-bold gap-1 ${app.signing_required ? "text-green-400 hover:text-green-300" : "text-muted-foreground hover:text-foreground"}`}
+                          onClick={() => signingMut.mutate({ appId: app.app_id, signing_required: !app.signing_required })}
+                          disabled={signingMut.isPending}
+                        >
+                          {app.signing_required
+                            ? <><ShieldCheck className="w-3 h-3" /> ENFORCED</>
+                            : <><ShieldOff className="w-3 h-3" /> DISABLED</>}
+                        </Button>
+                      </div>
+
+                      {/* Secret key row */}
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-muted-foreground font-mono shrink-0">SECRET:</span>
+                        <div className="flex-1 min-w-0 font-mono text-[10px] bg-background/60 rounded px-2 py-1 border border-border/40 truncate">
+                          {app.secret_key
+                            ? app.secret_key.slice(0, 8) + "•".repeat(24) + app.secret_key.slice(-8)
+                            : <span className="text-muted-foreground italic">none — create new app</span>}
+                        </div>
+                        {app.secret_key && (
+                          <button
+                            className="text-muted-foreground hover:text-foreground shrink-0"
+                            title="Copy full secret"
+                            onClick={() => { navigator.clipboard.writeText(app.secret_key!); toast({ title: "Copied!", description: "Secret key copied to clipboard." }); }}
+                          >
+                            <Copy className="w-3 h-3" />
+                          </button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 w-6 p-0 shrink-0 text-amber-400 hover:text-amber-300"
+                          title="Rotate secret key (generates new key — update APK)"
+                          onClick={() => {
+                            if (confirm(`Rotate secret for "${app.app_id}"?\n\nAll existing APKs using the old secret will BREAK until updated.`))
+                              rotateMut.mutate(app.app_id);
+                          }}
+                          disabled={rotateMut.isPending}
+                        >
+                          <RotateCw className="w-3 h-3" />
+                        </Button>
+                      </div>
+
+                      {app.signing_required && (
+                        <p className="text-[10px] text-amber-400/80 flex items-start gap-1">
+                          <ShieldAlert className="w-3 h-3 shrink-0 mt-px" />
+                          Requests without a valid HMAC signature will be rejected (401). Ensure APK has secret embedded.
+                        </p>
+                      )}
                     </div>
                   </div>
                 </CardContent>
