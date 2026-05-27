@@ -38,13 +38,12 @@ jobs:
           mkdir -p functions/api
           cp "artifacts/admin-panel/functions/api/[[path]].js" "functions/api/[[path]].js"
 
-      - name: Deploy to Cloudflare Pages (with Functions)
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: >
-            pages deploy artifacts/admin-panel/dist/public
-            --project-name=android-panel-mr-robot
-            --branch=main
+      - name: Deploy to Cloudflare Pages (wrangler v4 via npx)
+        run: |
+          npx wrangler@latest pages deploy artifacts/admin-panel/dist/public \
+            --project-name=android-panel-mr-robot \
+            --branch=main \
             --commit-dirty=true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
