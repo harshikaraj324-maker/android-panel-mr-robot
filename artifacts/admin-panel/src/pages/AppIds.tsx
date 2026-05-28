@@ -6,7 +6,7 @@ import {
   Plus, Trash2, KeyRound, RefreshCw, ToggleLeft, ToggleRight,
   ChevronRight, Wand2, Clock, RotateCcw, CalendarPlus, Copy,
   Check, ExternalLink, ArrowRight, Loader2,
-  Eye, EyeOff,
+  Eye, EyeOff, ShieldAlert,
 } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
