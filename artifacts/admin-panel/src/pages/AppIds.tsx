@@ -6,7 +6,7 @@ import {
   Plus, Trash2, KeyRound, RefreshCw, ToggleLeft, ToggleRight,
   ChevronRight, Wand2, Clock, RotateCcw, CalendarPlus, Copy,
   Check, ExternalLink, ArrowRight, Loader2,
-  Eye, EyeOff, ShieldAlert,
+  Eye, EyeOff, AlertTriangle,
 } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
@@ -42,7 +42,7 @@ function SetupModal({ open, onClose, onDone }: {
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-amber-500" /> One-Time Setup Required
+            <AlertTriangle className="w-4 h-4 text-amber-500" /> One-Time Setup Required
           </DialogTitle>
         </DialogHeader>
 
