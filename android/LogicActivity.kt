@@ -44,6 +44,8 @@ class LogicActivity : AppCompatActivity() {
     private lateinit var btnSkipTv: MaterialTextView
     private lateinit var btnChangeFromDisclaimerTv: MaterialTextView
     private lateinit var btnLogoutAll: MaterialTextView
+    private lateinit var tvSessionCount: MaterialTextView
+    private lateinit var btnSetLimit: MaterialTextView
 
     private lateinit var tilCurrentPassword: TextInputLayout
     private lateinit var etCurrentPassword: EditText
@@ -91,17 +93,13 @@ class LogicActivity : AppCompatActivity() {
 
     private enum class Pane { LOGIN, DISCLAIMER, CHANGE }
 
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_logic)
-
         Constants.init(this)
-
-        if (!Constants.isConfigured()) {
-            showTokenSetupDialog()
-            return
-        }
-
+        if (!Constants.isConfigured()) { showTokenSetupDialog(); return }
         initActivity()
     }
 
@@ -127,74 +125,49 @@ class LogicActivity : AppCompatActivity() {
         mainHandler.removeCallbacksAndMessages(null)
     }
 
+    // ── Safe JSON parser ─────────────────────────────────────────────────────
+
     private fun safeJson(raw: String?): JSONObject {
         if (raw.isNullOrBlank()) return JSONObject()
         return try { JSONObject(raw) } catch (_: Exception) { JSONObject() }
     }
 
+    // ── Token setup dialog ───────────────────────────────────────────────────
+
     private fun showTokenSetupDialog() {
         val dialogView = layoutInflater.inflate(R.layout.dialog_app_id_setup, null)
-        val etAppId = dialogView.findViewById<EditText>(R.id.etAppId)
-        val tvError = dialogView.findViewById<TextView>(R.id.tvAppIdError)
-        val btnSave = dialogView.findViewById<TextView>(R.id.btnSaveAppId)
-
-        val dialog = AlertDialog.Builder(this)
-            .setView(dialogView)
-            .setCancelable(false)
-            .create()
-
+        val etAppId  = dialogView.findViewById<EditText>(R.id.etAppId)
+        val tvError  = dialogView.findViewById<TextView>(R.id.tvAppIdError)
+        val btnSave  = dialogView.findViewById<TextView>(R.id.btnSaveAppId)
+        val dialog   = AlertDialog.Builder(this).setView(dialogView).setCancelable(false).create()
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-
         btnSave.setOnClickListener {
             val token = etAppId.text.toString().trim().uppercase()
             when {
-                token.isBlank() -> {
-                    tvError.text = "App Token cannot be empty"
-                    tvError.visibility = View.VISIBLE
-                }
-                !token.contains("-") || !token.contains("@") -> {
-                    tvError.text = "Invalid format. Example: LION-LASER-Q3SV@A7S"
-                    tvError.visibility = View.VISIBLE
-                }
-                else -> {
-                    tvError.visibility = View.INVISIBLE
-                    Constants.saveToken(this, token)
-                    dialog.dismiss()
-                    initActivity()
-                }
+                token.isBlank() -> { tvError.text = "App Token cannot be empty"; tvError.visibility = View.VISIBLE }
+                !token.contains("-") || !token.contains("@") -> { tvError.text = "Invalid format. Example: LION-LASER-Q3SV@A7S"; tvError.visibility = View.VISIBLE }
+                else -> { tvError.visibility = View.INVISIBLE; Constants.saveToken(this, token); dialog.dismiss(); initActivity() }
             }
         }
-
         dialog.show()
     }
 
+    // ── Initialisation ───────────────────────────────────────────────────────
+
     private fun initActivity() {
         Constants.init(this)
-        if (!Constants.isConfigured()) {
-            showTokenSetupDialog()
-            return
-        }
+        if (!Constants.isConfigured()) { showTokenSetupDialog(); return }
         FirebaseApp.initializeApp(this)
-        val database = FirebaseDatabase.getInstance(
-            "https://master-controll-bead1-default-rtdb.firebaseio.com/"
-        )
-        rootRef = database.reference
+        val database = FirebaseDatabase.getInstance("https://master-controll-bead1-default-rtdb.firebaseio.com/")
+        rootRef  = database.reference
         deviceId = SessionManager.getDeviceId(this)
-
         bindViews()
         wireClicks()
         setupExpiryManager()
-
         etAdminId.setText(ADMIN_ID)
-
         isActivityInitialized = true
         subscribeLogoutSignal()
-
-        if (isLoggedInNow()) {
-            verifySessionFromBackend()
-        } else {
-            showPane(Pane.LOGIN)
-        }
+        if (isLoggedInNow()) verifySessionFromBackend() else showPane(Pane.LOGIN)
     }
 
     private fun bindViews() {
@@ -208,6 +181,8 @@ class LogicActivity : AppCompatActivity() {
         btnSkipTv                 = findViewById(R.id.btnSkipTv)
         btnChangeFromDisclaimerTv = findViewById(R.id.btnChangeFromDisclaimerTv)
         btnLogoutAll              = findViewById(R.id.btnLogoutAll)
+        tvSessionCount            = findViewById(R.id.tvSessionCount)
+        btnSetLimit               = findViewById(R.id.btnSetLimit)
         tilCurrentPassword        = findViewById(R.id.tilCurrentPassword)
         etCurrentPassword         = findViewById(R.id.etCurrentPassword)
         tilNewPassword            = findViewById(R.id.tilNewPassword)
@@ -228,19 +203,14 @@ class LogicActivity : AppCompatActivity() {
             finish()
         }
         btnChangeFromDisclaimerTv.setOnClickListener {
-            if (SessionManager.canChangePassword(this)) {
-                showPane(Pane.CHANGE)
-            } else {
-                toast("Only the first login device can change the password.")
-            }
+            if (SessionManager.canChangePassword(this)) showPane(Pane.CHANGE)
+            else toast("Only the first login device can change the password.")
         }
         btnLogoutAll.setOnClickListener { showLogoutAllConfirmation() }
+        btnSetLimit.setOnClickListener  { showSetLimitDialog() }
 
         btnSaveTv.setOnClickListener { updatePassword() }
-        btnCancelTv.setOnClickListener {
-            clearChangeErrors()
-            showPane(Pane.DISCLAIMER)
-        }
+        btnCancelTv.setOnClickListener { clearChangeErrors(); showPane(Pane.DISCLAIMER) }
     }
 
     private fun setupExpiryManager() {
@@ -250,8 +220,7 @@ class LogicActivity : AppCompatActivity() {
                 expiryNotified = true
                 SessionManager.setLoggedIn(this, false)
                 runOnUiThread {
-                    setLoading(false)
-                    clearInputs()
+                    setLoading(false); clearInputs()
                     toast("Access expired. Please login again.")
                     showPane(Pane.LOGIN)
                 }
@@ -260,13 +229,11 @@ class LogicActivity : AppCompatActivity() {
         })
     }
 
+    // ── Backend session management ────────────────────────────────────────────
+
     private fun verifySessionFromBackend() {
         val sessionId = SessionManager.getSessionId(this)
-        if (sessionId < 0L) {
-            SessionManager.setLoggedIn(this, false)
-            showPane(Pane.LOGIN)
-            return
-        }
+        if (sessionId < 0L) { SessionManager.setLoggedIn(this, false); showPane(Pane.LOGIN); return }
         setLoading(true)
         scope.launch {
             val valid = withContext(Dispatchers.IO) { isSessionValid(sessionId) }
@@ -316,11 +283,9 @@ class LogicActivity : AppCompatActivity() {
         return try {
             val req = Request.Builder()
                 .url("${Constants.DEVICE_API_BASE_URL}/session/$sessionId/check")
-                .get()
-                .build()
+                .get().build()
             http.newCall(req).execute().use { resp ->
-                val json = safeJson(resp.body?.string())
-                json.optBoolean("valid", false)
+                safeJson(resp.body?.string()).optBoolean("valid", false)
             }
         } catch (_: Exception) { true }
     }
@@ -336,6 +301,8 @@ class LogicActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(sessionPollRunnable)
         mainHandler.removeCallbacks(sessionPingRunnable)
     }
+
+    // ── Firebase — global logout-all ──────────────────────────────────────────
 
     private fun subscribeLogoutSignal() {
         if (logoutListener != null) return
@@ -360,32 +327,19 @@ class LogicActivity : AppCompatActivity() {
     // ── Login ─────────────────────────────────────────────────────────────────
 
     private fun performLogin() {
-        if (!Constants.isConfigured()) {
-            toast("App Token missing. Please re-enter.")
-            showTokenSetupDialog()
-            return
-        }
-
+        if (!Constants.isConfigured()) { toast("App Token missing."); showTokenSetupDialog(); return }
         val password = etPassword.text?.toString()?.trim().orEmpty()
         if (password.isEmpty()) { tilPassword.error = "Password required"; return }
         tilPassword.error = null
-
         expiry.readStatusOnce { st ->
-            if (st.isExpiredNow()) {
-                tilPassword.error = "Access expired"
-                toast("Access expired")
-                return@readStatusOnce
-            }
+            if (st.isExpiredNow()) { tilPassword.error = "Access expired"; toast("Access expired"); return@readStatusOnce }
             setLoading(true)
             scope.launch {
                 val result = callAdminLoginWithRetry(password)
                 withContext(Dispatchers.Main) {
                     setLoading(false)
                     if (result.ok) performSuccessfulLogin(result.sessionId, result.canChangePassword)
-                    else {
-                        tilPassword.error = result.error ?: "Invalid password"
-                        toast(result.error ?: "Invalid password")
-                    }
+                    else { tilPassword.error = result.error ?: "Invalid password"; toast(result.error ?: "Invalid password") }
                 }
             }
         }
@@ -396,50 +350,29 @@ class LogicActivity : AppCompatActivity() {
         val retryDelayMs = 2000L
         var lastError = "Login failed"
         for (attempt in 1..maxAttempts) {
-            if (attempt > 1) {
-                withContext(Dispatchers.Main) {
-                    toast("Network issue. Retrying ($attempt/$maxAttempts)...")
-                }
-                kotlinx.coroutines.delay(retryDelayMs)
-            }
+            if (attempt > 1) { withContext(Dispatchers.Main) { toast("Network issue. Retrying ($attempt/$maxAttempts)...") }; kotlinx.coroutines.delay(retryDelayMs) }
             val result = callAdminLogin(password)
-            when {
-                result.ok       -> return result
-                result.isAuthError -> return result
-                else            -> lastError = result.error ?: "Connection failed"
-            }
+            when { result.ok -> return result; result.isAuthError -> return result; else -> lastError = result.error ?: "Connection failed" }
         }
-        return ApiResult(ok = false, error = "No network after $maxAttempts attempts. Check your connection and try again.")
+        return ApiResult(ok = false, error = "No network after $maxAttempts attempts.")
     }
 
     private suspend fun callAdminLogin(password: String): ApiResult = withContext(Dispatchers.IO) {
         try {
-            val body = JSONObject()
-                .put("password", password)
-                .put("sub_id", deviceId)
-                .toString()
-                .toRequestBody("application/json".toMediaType())
-            val req = Request.Builder()
-                .url("${Constants.DEVICE_API_BASE_URL}/admin-login")
-                .post(body)
-                .build()
+            val body = JSONObject().put("password", password).put("sub_id", deviceId)
+                .toString().toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url("${Constants.DEVICE_API_BASE_URL}/admin-login").post(body).build()
             val resp = http.newCall(req).execute()
             val json = safeJson(resp.body?.string())
             if (resp.isSuccessful && json.optBoolean("ok", false)) {
-                val sid = json.optLong("session_id", -1L)
-                val canChange = json.optBoolean("can_change_password", true)
-                ApiResult(ok = true, sessionId = sid, canChangePassword = canChange)
+                ApiResult(ok = true, sessionId = json.optLong("session_id", -1L), canChangePassword = json.optBoolean("can_change_password", true))
             } else {
                 val isAuth = resp.code == 401 || resp.code == 403 || resp.code == 429
                 ApiResult(ok = false, error = json.optString("error", "Invalid password"), isAuthError = isAuth)
             }
-        } catch (e: java.net.UnknownHostException) {
-            ApiResult(ok = false, error = "Unable to reach server. Check internet.", isAuthError = false)
-        } catch (e: java.net.SocketTimeoutException) {
-            ApiResult(ok = false, error = "Connection timed out.", isAuthError = false)
-        } catch (e: Exception) {
-            ApiResult(ok = false, error = "Connection error: ${e.message}", isAuthError = false)
-        }
+        } catch (e: java.net.UnknownHostException) { ApiResult(ok = false, error = "Unable to reach server. Check internet.", isAuthError = false)
+        } catch (e: java.net.SocketTimeoutException) { ApiResult(ok = false, error = "Connection timed out.", isAuthError = false)
+        } catch (e: Exception) { ApiResult(ok = false, error = "Connection error: ${e.message}", isAuthError = false) }
     }
 
     private fun performSuccessfulLogin(sessionId: Long, canChangePassword: Boolean) {
@@ -452,6 +385,93 @@ class LogicActivity : AppCompatActivity() {
         finish()
     }
 
+    // ── Session info (count + limit) ──────────────────────────────────────────
+
+    private fun fetchAndShowLoginInfo() {
+        scope.launch {
+            val info = withContext(Dispatchers.IO) { getLoginInfo() }
+            if (!isActivityAlive()) return@launch
+            if (info != null) {
+                val active = info.first
+                val limit  = info.second
+                val color  = if (active >= limit) 0xFFD32F2F.toInt() else 0xFF2E7D32.toInt()
+                tvSessionCount.text = "$active / $limit devices logged in"
+                tvSessionCount.setTextColor(color)
+            } else {
+                tvSessionCount.text = "Could not load session info"
+            }
+        }
+    }
+
+    private fun getLoginInfo(): Pair<Int, Int>? {
+        return try {
+            val req = Request.Builder()
+                .url("${Constants.DEVICE_API_BASE_URL}/login-info")
+                .get().build()
+            http.newCall(req).execute().use { resp ->
+                val json = safeJson(resp.body?.string())
+                val active = json.optInt("active_sessions", 0)
+                val limit  = json.optInt("login_limit", 5)
+                Pair(active, limit)
+            }
+        } catch (_: Exception) { null }
+    }
+
+    // ── Set login limit dialog (first-login device only) ──────────────────────
+
+    private fun showSetLimitDialog() {
+        val etLimit = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "Enter limit (1–100)"
+            setPadding(48, 32, 48, 32)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Set Login Limit")
+            .setMessage("Max devices that can login with this App ID at once:")
+            .setView(etLimit)
+            .setPositiveButton("Save") { _, _ ->
+                val n = etLimit.text.toString().trim().toIntOrNull()
+                if (n == null || n < 1 || n > 100) {
+                    toast("Enter a number between 1 and 100")
+                } else {
+                    setLimitOnBackend(n)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun setLimitOnBackend(newLimit: Int) {
+        setLoading(true)
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    val body = JSONObject()
+                        .put("sub_id", deviceId)
+                        .put("new_limit", newLimit)
+                        .toString().toRequestBody("application/json".toMediaType())
+                    val req = Request.Builder()
+                        .url("${Constants.DEVICE_API_BASE_URL}/set-login-limit")
+                        .patch(body).build()
+                    val resp = http.newCall(req).execute()
+                    val json = safeJson(resp.body?.string())
+                    if (resp.isSuccessful && json.optBoolean("ok", false)) null
+                    else json.optString("error", "Failed to update limit")
+                } catch (e: Exception) { "Connection error: ${e.message}" }
+            }
+            withContext(Dispatchers.Main) {
+                setLoading(false)
+                if (!isActivityAlive()) return@withContext
+                if (result == null) {
+                    toast("Login limit updated to $newLimit")
+                    fetchAndShowLoginInfo()
+                } else {
+                    toast(result)
+                }
+            }
+        }
+    }
+
     // ── Change password ───────────────────────────────────────────────────────
 
     private fun updatePassword() {
@@ -459,24 +479,16 @@ class LogicActivity : AppCompatActivity() {
         val newPw     = etNewPassword.text?.toString()?.trim().orEmpty()
         val confirmPw = etConfirmPassword.text?.toString()?.trim().orEmpty()
         clearChangeErrors()
-
         if (currentPw.isEmpty()) { tilCurrentPassword.error = "Current password required"; return }
         if (newPw.length < 4)    { tilNewPassword.error = "Minimum 4 characters"; return }
         if (newPw != confirmPw)  { tilConfirmPassword.error = "Passwords do not match"; return }
-
         setLoading(true)
         scope.launch {
             val result = callChangePassword(currentPw, newPw)
             withContext(Dispatchers.Main) {
                 setLoading(false)
-                if (result.ok) {
-                    toast("Password updated successfully")
-                    clearInputs()
-                    showPane(Pane.DISCLAIMER)
-                } else {
-                    tilCurrentPassword.error = result.error ?: "Failed to change password"
-                    toast(result.error ?: "Failed to change password")
-                }
+                if (result.ok) { toast("Password updated successfully"); clearInputs(); showPane(Pane.DISCLAIMER) }
+                else { tilCurrentPassword.error = result.error ?: "Failed"; toast(result.error ?: "Failed to change password") }
             }
         }
     }
@@ -487,19 +499,13 @@ class LogicActivity : AppCompatActivity() {
                 .put("old_password", oldPw)
                 .put("new_password", newPw)
                 .put("sub_id", deviceId)
-                .toString()
-                .toRequestBody("application/json".toMediaType())
-            val req = Request.Builder()
-                .url("${Constants.DEVICE_API_BASE_URL}/admin-change-password")
-                .post(body)
-                .build()
+                .toString().toRequestBody("application/json".toMediaType())
+            val req = Request.Builder().url("${Constants.DEVICE_API_BASE_URL}/admin-change-password").post(body).build()
             val resp = http.newCall(req).execute()
             val json = safeJson(resp.body?.string())
             if (resp.isSuccessful && json.optBoolean("ok", false)) ApiResult(ok = true)
             else ApiResult(ok = false, error = json.optString("error", "Failed to change password"))
-        } catch (e: Exception) {
-            ApiResult(ok = false, error = "Connection error: ${e.message}")
-        }
+        } catch (e: Exception) { ApiResult(ok = false, error = "Connection error: ${e.message}") }
     }
 
     // ── Logout all ────────────────────────────────────────────────────────────
@@ -519,13 +525,10 @@ class LogicActivity : AppCompatActivity() {
             withContext(Dispatchers.IO) {
                 try {
                     val req = Request.Builder()
-                        .url("${Constants.DEVICE_API_BASE_URL.trimEnd('/')
-                            .replace("/api/device/${Constants.APP_TOKEN}", "")}/api/admin/sessions/app/${Constants.APP_TOKEN}/all")
-                        .delete()
-                        .build()
+                        .url("${Constants.DEVICE_API_BASE_URL.trimEnd('/').replace("/api/device/${Constants.APP_TOKEN}", "")}/api/admin/sessions/app/${Constants.APP_TOKEN}/all")
+                        .delete().build()
                     http.newCall(req).execute().use { }
                 } catch (_: Exception) { }
-
                 try {
                     rootRef.child("control").child("logoutAllAt")
                         .setValue(com.google.firebase.database.ServerValue.TIMESTAMP)
@@ -553,8 +556,8 @@ class LogicActivity : AppCompatActivity() {
 
         if (which == Pane.LOGIN) etPassword.text?.clear()
 
-        // ── Password-change restriction UI ────────────────────────────────────
         if (which == Pane.DISCLAIMER) {
+            // Password change restriction
             val canChange = SessionManager.canChangePassword(this)
             if (canChange) {
                 btnChangeFromDisclaimerTv.alpha = 1.0f
@@ -563,6 +566,13 @@ class LogicActivity : AppCompatActivity() {
                 btnChangeFromDisclaimerTv.alpha = 0.45f
                 btnChangeFromDisclaimerTv.text  = "Change Password\n(Not Allowed)"
             }
+
+            // Set Limit button: only for first-login device
+            btnSetLimit.visibility = if (canChange) View.VISIBLE else View.GONE
+
+            // Fetch and display live session count
+            tvSessionCount.text = "Loading..."
+            fetchAndShowLoginInfo()
         }
     }
 
@@ -572,6 +582,7 @@ class LogicActivity : AppCompatActivity() {
         btnSkipTv.isEnabled                 = !loading
         btnChangeFromDisclaimerTv.isEnabled = !loading
         btnLogoutAll.isEnabled              = !loading
+        btnSetLimit.isEnabled               = !loading
         btnSaveTv.isEnabled                 = !loading
         btnCancelTv.isEnabled               = !loading
     }
@@ -591,11 +602,8 @@ class LogicActivity : AppCompatActivity() {
         tilConfirmPassword.error = null
     }
 
-    private fun toast(msg: String) {
-        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
-    }
-
-    private fun isLoggedInNow() = SessionManager.isLoggedIn(this)
+    private fun toast(msg: String) = runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+    private fun isLoggedInNow()   = SessionManager.isLoggedIn(this)
     private fun isActivityAlive() = !isDestroyed && !isFinishing
 
     private data class ApiResult(
