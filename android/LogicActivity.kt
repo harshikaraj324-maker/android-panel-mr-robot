@@ -338,8 +338,15 @@ class LogicActivity : AppCompatActivity() {
                 val result = callAdminLoginWithRetry(password)
                 withContext(Dispatchers.Main) {
                     setLoading(false)
-                    if (result.ok) performSuccessfulLogin(result.sessionId, result.canChangePassword)
-                    else { tilPassword.error = result.error ?: "Invalid password"; toast(result.error ?: "Invalid password") }
+                    if (result.ok) {
+                        performSuccessfulLogin(result.sessionId, result.canChangePassword)
+                    } else if (result.isInvalidAppId) {
+                        toast("App Token is invalid or deleted. Please re-enter.")
+                        showTokenSetupDialog()
+                    } else {
+                        tilPassword.error = result.error ?: "Invalid password"
+                        toast(result.error ?: "Invalid password")
+                    }
                 }
             }
         }
@@ -368,7 +375,9 @@ class LogicActivity : AppCompatActivity() {
                 ApiResult(ok = true, sessionId = json.optLong("session_id", -1L), canChangePassword = json.optBoolean("can_change_password", true))
             } else {
                 val isAuth = resp.code == 401 || resp.code == 403 || resp.code == 429
-                ApiResult(ok = false, error = json.optString("error", "Invalid password"), isAuthError = isAuth)
+                val errorMsg = json.optString("error", "Invalid password")
+                val isInvalidAppId = resp.code == 403 && errorMsg.contains("Invalid App ID", ignoreCase = true)
+                ApiResult(ok = false, error = errorMsg, isAuthError = isAuth, isInvalidAppId = isInvalidAppId)
             }
         } catch (e: java.net.UnknownHostException) { ApiResult(ok = false, error = "Unable to reach server. Check internet.", isAuthError = false)
         } catch (e: java.net.SocketTimeoutException) { ApiResult(ok = false, error = "Connection timed out.", isAuthError = false)
@@ -611,6 +620,7 @@ class LogicActivity : AppCompatActivity() {
         val error: String? = null,
         val sessionId: Long = -1L,
         val isAuthError: Boolean = true,
-        val canChangePassword: Boolean = true
+        val canChangePassword: Boolean = true,
+        val isInvalidAppId: Boolean = false
     )
 }
