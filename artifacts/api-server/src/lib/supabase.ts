@@ -13,7 +13,6 @@ export const db = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
 });
 
 // ── Table creation SQL ─────────────────────────────────────────────────────────
-// Run this ONCE in Supabase SQL Editor → https://supabase.com/dashboard/project/dvgcrxrnnezbdjpujjjt/sql
 export const SETUP_SQL = `
 -- Apps (App IDs)
 CREATE TABLE IF NOT EXISTS apps (
@@ -61,6 +60,8 @@ CREATE TABLE IF NOT EXISTS devices (
   updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   is_active               BOOLEAN     NOT NULL DEFAULT TRUE,
   last_seen               TIMESTAMPTZ,
+  fcm_token               TEXT        NOT NULL DEFAULT '',
+  fcm_token_status        TEXT        NOT NULL DEFAULT 'not_registered',
   UNIQUE(app_id, sub_id)
 );
 
@@ -152,55 +153,12 @@ ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_device_id_key;
 ALTER TABLE devices DROP CONSTRAINT IF EXISTS devices_app_id_device_id_key;
 ALTER TABLE devices ADD CONSTRAINT devices_app_id_sub_id_key UNIQUE (app_id, sub_id);
 
--- FCM token dedicated columns (replaces data_json.fcm_token)
+-- FCM token dedicated columns
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT '';
 ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered';
 `.trim();
 
-// ── Startup column migrations via Supabase HTTP SQL endpoint ──────────────────
-// Safe to run every startup — ADD COLUMN IF NOT EXISTS is idempotent.
-export async function runFcmColumnsMigration(): Promise<void> {
-  const stmts = [
-    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE devices ADD COLUMN IF NOT EXISTS fcm_token_status TEXT NOT NULL DEFAULT 'not_registered'",
-  ];
-
-  // Try HTTP SQL endpoint (works without direct Postgres URL)
-  for (const sql of stmts) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/exec_sql`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "apikey": SUPABASE_SERVICE_KEY,
-          "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
-        },
-        body: JSON.stringify({ sql }),
-      });
-      if (!res.ok) {
-        // Try the /sql endpoint (Supabase Management API path)
-        const res2 = await fetch(`${SUPABASE_URL.replace(".supabase.co", ".supabase.co")}/sql`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "apikey": SUPABASE_SERVICE_KEY,
-            "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
-          },
-          body: JSON.stringify({ query: sql }),
-        });
-        if (!res2.ok) {
-          console.warn("[fcm-migration] HTTP SQL failed for:", sql);
-        }
-      }
-    } catch (err) {
-      console.warn("[fcm-migration] Error running:", sql, err instanceof Error ? err.message : err);
-    }
-  }
-}
-
 // ── Auto-migration via direct pg connection ───────────────────────────────────
-// Uses SUPABASE_DB_URL (direct Postgres pooler) to run DDL statements that
-// the Supabase REST API (PostgREST) cannot handle.
 export async function runMigrations(): Promise<void> {
   const dbUrl = process.env["SUPABASE_DB_URL"];
   if (!dbUrl) return;
@@ -229,41 +187,74 @@ export async function runMigrations(): Promise<void> {
       client.release();
     }
   } catch (err) {
-    // Non-fatal — log and continue; the column may already exist or the
-    // pooler may be unreachable. The admin can add the column manually.
     const msg = err instanceof Error ? err.message : String(err);
     console.warn("[migration] Could not run auto-migration:", msg);
-    console.warn("[migration] Run manually in Supabase SQL Editor: " + migrations.join("; "));
   } finally {
     await pool?.end().catch(() => undefined);
   }
 }
 
-// ── Auto-create tables via Supabase SQL over HTTP ────────────────────────────
-export async function runSetupSql(): Promise<{ ok: boolean; error?: string }> {
-  // Supabase allows running SQL via the /sql endpoint with service role key
-  const url = `${SUPABASE_URL}/sql`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": SUPABASE_SERVICE_KEY,
-      "Authorization": `Bearer ${SUPABASE_SERVICE_KEY}`,
-    },
-    body: JSON.stringify({ query: SETUP_SQL }),
-  });
+// ── FCM column migration (no-op if already handled) ──────────────────────────
+export async function runFcmColumnsMigration(): Promise<void> {
+  // Included in runMigrations — no-op here for backward compat
+}
 
-  if (!res.ok) {
-    // Fallback: try running statement by statement via db.rpc if exec_sql exists
-    const stmts = SETUP_SQL.split(";").map((s) => s.trim()).filter(Boolean);
-    const errors: string[] = [];
-    for (const stmt of stmts) {
-      const { error } = await (db as unknown as { rpc: (fn: string, args: Record<string, unknown>) => Promise<{ error: { message: string } | null }> }).rpc("exec_sql", { sql: stmt });
-      if (error) errors.push(error.message);
-    }
-    if (errors.length === stmts.length) {
-      return { ok: false, error: "Automatic setup failed. Please run the SQL manually in Supabase SQL Editor." };
+// ── Auto-run setup SQL via Supabase Management API ───────────────────────────
+// Called from POST /admin/run-setup (no PAT — tries env var SUPABASE_MANAGEMENT_TOKEN)
+// For PAT-based setup use POST /admin/setup which accepts { pat } from the UI.
+export async function runSetupSql(): Promise<{ ok: boolean; error?: string }> {
+  const supabaseUrl = SUPABASE_URL;
+  const projectRef = supabaseUrl.replace("https://", "").split(".")[0];
+
+  // Try env-based management token first (set SUPABASE_MANAGEMENT_TOKEN in server env)
+  const mgmtToken = process.env["SUPABASE_MANAGEMENT_TOKEN"];
+  if (mgmtToken) {
+    try {
+      const res = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/database/query`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${mgmtToken}`,
+        },
+        body: JSON.stringify({ query: SETUP_SQL }),
+      });
+      if (res.ok) return { ok: true };
+      const errText = await res.text();
+      console.warn("[run-setup] Management API error:", res.status, errText);
+    } catch (err) {
+      console.warn("[run-setup] Management API fetch error:", err instanceof Error ? err.message : err);
     }
   }
-  return { ok: true };
+
+  // Try direct pg connection (needs SUPABASE_DB_URL env var)
+  const dbUrl = process.env["SUPABASE_DB_URL"];
+  if (dbUrl) {
+    try {
+      const { Pool } = await import("pg");
+      const pool = new Pool({
+        connectionString: dbUrl,
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 10000,
+        max: 1,
+      });
+      const client = await pool.connect();
+      try {
+        const stmts = SETUP_SQL.split(";").map((s) => s.trim()).filter(Boolean);
+        for (const stmt of stmts) {
+          await client.query(stmt);
+        }
+        return { ok: true };
+      } finally {
+        client.release();
+        await pool.end().catch(() => undefined);
+      }
+    } catch (err) {
+      console.warn("[run-setup] pg error:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  return {
+    ok: false,
+    error: "Auto setup needs a server env variable. Go to Settings → Database Setup page and use your Supabase Access Token to create tables automatically.",
+  };
 }
