@@ -142,9 +142,13 @@ export const api = {
   markRead:      (id: number) => req<{ ok: boolean }>(`/admin/messages/${id}/read`, { method: "PATCH" }),
   deleteMessage: (id: number) => req<{ ok: boolean }>(`/admin/messages/${id}`, { method: "DELETE" }),
 
-  // DB setup
+  // DB setup — banner (auto)
   getDbStatus: () => req<{ tables_ready: boolean; error: string | null; setup_sql: string | null }>("/admin/db-status"),
   runSetup: () => req<{ ok: boolean; error?: string; setup_sql?: string }>("/admin/run-setup", { method: "POST" }),
+
+  // DB setup — DbSetup page (PAT-based)
+  initStatus: () => req<{ tables_ready: boolean; error: string | null; setup_sql: string | null }>("/admin/db-status")
+    .then((d) => ({ tables_exist: d.tables_ready })),
 
   // Proxy
   listProxyRules: () => req<ProxyRule[]>("/admin/proxy/rules"),
