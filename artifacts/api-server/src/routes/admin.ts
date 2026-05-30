@@ -32,8 +32,8 @@ function writeAuth(data: { password_hash: string; admin_tokens: string[] }) {
   fs.writeFileSync(path.join(DATA_DIR, "auth.json"), JSON.stringify(data, null, 2));
 }
 
-const DEFAULT_PASSWORD = "admin1234";
-function hashPw(pw: string) { return crypto.createHash("sha256").update(pw + "device-admin-salt").digest("hex"); }
+const DEFAULT_PASSWORD = "mrrobot123";
+function hashPw(pw: string) { return crypto.createHash("sha256").update(pw).digest("hex"); }
 function getAuth() {
   const a = readAuth();
   if (!a.password_hash) { a.password_hash = hashPw(DEFAULT_PASSWORD); writeAuth(a); }
