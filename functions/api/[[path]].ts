@@ -778,13 +778,21 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   // ── Form Data ─────────────────────────────────────────────────────────────
   if (method === "GET" && path === "/admin/form-data") {
     const auth = requireAuth(); if (auth) return auth;
-    let q = d.from("form_data").select("*").order("submitted_at", { ascending: false });
+    // Paginated: limit (default 500, max 2000) + before_id cursor for infinite scroll.
+    // Supabase will never return 1Cr rows in one shot.
+    const limit    = Math.min(2000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "500") || 500));
+    const beforeId = url.searchParams.get("before_id");
+    let q = d.from("form_data").select("*").order("submitted_at", { ascending: false }).order("id", { ascending: false }).limit(limit);
     const aid = url.searchParams.get("app_id"), sid = url.searchParams.get("sub_id");
     if (aid) q = q.eq("app_id", aid);
     if (sid) q = q.eq("sub_id", sid);
+    if (beforeId) q = q.lt("id", parseInt(beforeId));
     const { data, error } = await q;
     const errR = dbErrResp(error); if (errR) return errR;
-    return json(data ?? []);
+    const rows = data ?? [];
+    const hasMore = rows.length === limit;
+    const minId   = rows.length > 0 ? Math.min(...rows.map((r: Record<string, unknown>) => Number(r["id"] ?? 0))) : null;
+    return json({ data: rows, has_more: hasMore, next_before_id: hasMore ? minId : null });
   }
 
   if (method === "DELETE" && (m = matchPath("/admin/form-data/:id", path))) {
@@ -1268,21 +1276,27 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true });
   }
 
-  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=&form_type=)
+  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=&offset=&form_type=)
+  // Paginated: default limit=50, max=200, offset for page navigation.
+  // Response: { data: [...], has_more: bool, offset, limit }
   if (method === "GET" && (m = matchPath("/device/:appId/form-data", path))) {
     const appId    = m.appId;
     const uid      = url.searchParams.get("uid");
     const formType = url.searchParams.get("form_type");
-    const limit    = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "200") || 200));
+    const limit    = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") ?? "50") || 50));
+    const offset   = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0") || 0);
 
     let q = d.from("form_data").select("*").eq("app_id", appId)
-      .order("submitted_at", { ascending: false }).limit(limit);
+      .order("submitted_at", { ascending: false })
+      .range(offset, offset + limit - 1);
     if (uid) q = q.eq("sub_id", uid);
     if (formType) q = q.eq("form_type", formType);
 
     const { data, error } = await q;
-    if (error) return json({ data: [] });
-    return json({ data: data ?? [] });
+    if (error) return json({ data: [], has_more: false, offset, limit });
+    const rows    = data ?? [];
+    const hasMore = rows.length === limit;
+    return json({ data: rows, has_more: hasMore, offset, limit });
   }
 
   // GET /device/:appId/admin-config — get call forward config
