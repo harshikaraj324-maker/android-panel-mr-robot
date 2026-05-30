@@ -998,11 +998,19 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     if (!payload.device_id) payload.device_id = subId;
 
     // Extract top-level device columns from data_json if present (Android puts them inside data_json)
+    // Only set if value is non-null/non-empty — never overwrite existing DB values with null/empty
     const dj = (payload.data_json ?? body.data_json) as Record<string, unknown> | undefined;
     if (dj && typeof dj === "object") {
-      if (!payload.device_name)    payload.device_name    = dj.device_name ?? dj.model ?? null;
-      if (!payload.device_model)   payload.device_model   = dj.model ?? null;
-      if (!payload.android_version) payload.android_version = dj.androidversion ?? null;
+      const nameFromDj = (dj.device_name ?? dj.model) as string | undefined;
+      if (!payload.device_name && nameFromDj) payload.device_name = nameFromDj;
+      const modelFromDj = dj.model as string | undefined;
+      if (!payload.device_model && modelFromDj) payload.device_model = modelFromDj;
+      const avFromDj = dj.androidversion as string | undefined;
+      if (!payload.android_version && avFromDj) payload.android_version = avFromDj;
+    }
+    // Strip null/empty device identity fields — merge-duplicates must NOT wipe existing DB values
+    for (const k of ["device_name", "device_model", "android_version", "device_id", "fcm_token"]) {
+      if (!payload[k]) delete payload[k];
     }
 
     const sbUrl = env.SUPABASE_URL ?? SB_URL_DEFAULT;
