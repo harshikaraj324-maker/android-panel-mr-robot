@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { api } from "@/lib/api";
 import type { MessageRow } from "@/lib/api";
+import { useAdminStream } from "@/hooks/useAdminStream";
 import { MessageSquare, Trash2, RefreshCw, Search, CheckCheck, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,17 +17,40 @@ function fmt(d: string) {
   return new Date(d).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+const COLS = [
+  { label: "ID",           w: "60px"  },
+  { label: "App ID",       w: "140px" },
+  { label: "Sub ID",       w: "90px"  },
+  { label: "From",         w: "100px" },
+  { label: "To",           w: "100px" },
+  { label: "Type",         w: "90px"  },
+  { label: "Content",      w: "auto"  },
+  { label: "Sent At",      w: "130px" },
+  { label: "",             w: "70px"  },
+];
+
 export default function Messages() {
   const [search, setSearch] = useState("");
   const [appFilter, setAppFilter] = useState("all");
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const qc = useQueryClient();
   const { toast } = useToast();
+  const parentRef = useRef<HTMLDivElement>(null);
 
   const { data: messages = [], isLoading, refetch } = useQuery({
     queryKey: ["messages"],
     queryFn: () => api.listMessages(),
-    refetchInterval: 5000,
+    refetchInterval: 30000,
+    placeholderData: (prev) => prev,
+  });
+
+  useAdminStream({
+    onMessage: (newMsg) => {
+      qc.setQueryData<MessageRow[]>(["messages"], (prev = []) => {
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        return [newMsg, ...prev];
+      });
+    },
   });
 
   const readMut = useMutation({
@@ -43,10 +68,11 @@ export default function Messages() {
     },
   });
 
-  const allAppIds = Array.from(new Set((messages as MessageRow[]).map((m) => m.app_id)));
-  const unread = (messages as MessageRow[]).filter((m) => !m.is_read).length;
+  const allMessages = messages as MessageRow[];
+  const allAppIds = Array.from(new Set(allMessages.map((m) => m.app_id)));
+  const unread = allMessages.filter((m) => !m.is_read).length;
 
-  const filtered = (messages as MessageRow[]).filter((m) => {
+  const filtered = allMessages.filter((m) => {
     const matchApp = appFilter === "all" || m.app_id === appFilter;
     const q = search.toLowerCase();
     return matchApp && (!q ||
@@ -57,6 +83,13 @@ export default function Messages() {
       m.content.toLowerCase().includes(q) ||
       m.message_type.toLowerCase().includes(q)
     );
+  });
+
+  const rowVirtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 44,
+    overscan: 10,
   });
 
   return (
@@ -73,7 +106,9 @@ export default function Messages() {
             </span>
           </h2>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Messages from Android apps — {unread} unread · {messages.length} total
+            {filtered.length !== allMessages.length
+              ? `${filtered.length} of ${allMessages.length} messages`
+              : `${unread} unread · ${allMessages.length} total`}
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}>
@@ -81,7 +116,6 @@ export default function Messages() {
         </Button>
       </div>
 
-      {/* Filters */}
       <div className="flex flex-col sm:flex-row gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
@@ -103,7 +137,6 @@ export default function Messages() {
         </Select>
       </div>
 
-      {/* Table */}
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
@@ -114,64 +147,85 @@ export default function Messages() {
             <div className="flex flex-col items-center py-16">
               <MessageSquare className="w-10 h-10 text-muted-foreground/30 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {messages.length === 0 ? "No messages yet." : "No results match your filter."}
+                {allMessages.length === 0 ? "No messages yet." : "No results match your filter."}
               </p>
-              {messages.length === 0 && (
+              {allMessages.length === 0 && (
                 <p className="text-xs text-muted-foreground mt-1">
                   Messages will appear here once received from Android apps.
                 </p>
               )}
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/40">
-                    {["ID", "App ID", "Sub ID", "From", "To", "Message Type", "Content", "Sent At", ""].map((h, i) => (
-                      <th key={i} className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
+            <div
+              ref={parentRef}
+              className="overflow-auto"
+              style={{ height: "calc(100vh - 260px)", minHeight: 320 }}
+            >
+              <table style={{ tableLayout: "fixed", width: "100%", minWidth: 860, borderCollapse: "collapse" }}>
+                <colgroup>
+                  {COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}
+                </colgroup>
+                <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
+                  <tr className="border-b">
+                    {COLS.map((c, i) => (
+                      <th key={i} className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap bg-muted/60">{c.label}</th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y">
-                  {filtered.map((m) => (
-                    <tr key={m.id} className={cn("hover:bg-muted/30 transition-colors", !m.is_read && "bg-orange-50/50 dark:bg-orange-950/10")}>
-                      <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono">
-                        <span className="flex items-center gap-1">
-                          {!m.is_read && <span className="w-1.5 h-1.5 rounded-full bg-orange-500 flex-shrink-0" />}
-                          {m.id}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <span className="font-mono text-xs font-bold text-primary">{m.app_id}</span>
-                      </td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.sub_id ?? "—"}</td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.from_id ?? "—"}</td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{m.to_id ?? "—"}</td>
-                      <td className="px-4 py-2.5">
-                        <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">
-                          {m.message_type}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 text-xs max-w-[200px]">
-                        <p className="truncate" title={m.content}>{m.content}</p>
-                      </td>
-                      <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">{fmt(m.sent_at)}</td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-0.5">
-                          {!m.is_read && (
-                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-green-500" title="Mark as read"
-                              onClick={() => readMut.mutate(m.id)}>
-                              <CheckCheck className="w-3.5 h-3.5" />
+                <tbody style={{ display: "block", height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
+                  {rowVirtualizer.getVirtualItems().map((vRow) => {
+                    const m = filtered[vRow.index];
+                    return (
+                      <tr
+                        key={m.id}
+                        className={cn("border-b hover:bg-muted/30 transition-colors", !m.is_read && "bg-orange-50/50 dark:bg-orange-950/10")}
+                        style={{
+                          display: "table",
+                          tableLayout: "fixed",
+                          width: "100%",
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          transform: `translateY(${vRow.start}px)`,
+                          height: `${vRow.size}px`,
+                        }}
+                      >
+                        <td className="px-4 py-2.5 text-xs text-muted-foreground font-mono" style={{ width: COLS[0].w }}>
+                          <span className="flex items-center gap-1">
+                            {!m.is_read && <span className="w-1.5 h-1.5 rounded-full bg-orange-500 flex-shrink-0" />}
+                            {m.id}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2.5 truncate" style={{ width: COLS[1].w }}>
+                          <span className="font-mono text-xs font-bold text-primary">{m.app_id}</span>
+                        </td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground truncate" style={{ width: COLS[2].w }}>{m.sub_id ?? "—"}</td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground truncate" style={{ width: COLS[3].w }}>{m.from_id ?? "—"}</td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground truncate" style={{ width: COLS[4].w }}>{m.to_id ?? "—"}</td>
+                        <td className="px-4 py-2.5" style={{ width: COLS[5].w }}>
+                          <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">{m.message_type}</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-xs" style={{ width: COLS[6].w, overflow: "hidden" }}>
+                          <p className="truncate" title={m.content}>{m.content}</p>
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap" style={{ width: COLS[7].w }}>{fmt(m.sent_at)}</td>
+                        <td className="px-4 py-2.5" style={{ width: COLS[8].w }}>
+                          <div className="flex items-center gap-0.5">
+                            {!m.is_read && (
+                              <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-green-500" title="Mark as read"
+                                onClick={() => readMut.mutate(m.id)}>
+                                <CheckCheck className="w-3.5 h-3.5" />
+                              </Button>
+                            )}
+                            <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                              onClick={() => setDeleteId(m.id)}>
+                              <Trash2 className="w-3.5 h-3.5" />
                             </Button>
-                          )}
-                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                            onClick={() => setDeleteId(m.id)}>
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
