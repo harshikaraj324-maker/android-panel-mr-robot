@@ -248,6 +248,30 @@ async function getFirebaseAccessToken(serviceAccountJson: string): Promise<strin
   }
 }
 
+async function sendFcmLegacy(
+  legacyKey: string,
+  fcmToken: string,
+  data: Record<string, string>,
+  notification?: { title: string; body: string },
+): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  const legacyBody: Record<string, unknown> = { to: fcmToken };
+  if (notification) legacyBody.notification = notification;
+  if (Object.keys(data).length) legacyBody.data = data;
+
+  try {
+    const res = await fetch("https://fcm.googleapis.com/fcm/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `key=${legacyKey}` },
+      body: JSON.stringify(legacyBody),
+    });
+    if (!res.ok) return { ok: false, error: `FCM legacy error ${res.status}` };
+    const result = await res.json() as { message_id?: string; multicast_id?: number };
+    return { ok: true, messageId: String(result.message_id ?? result.multicast_id ?? "") };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+}
+
 async function sendFcm(
   env: Env,
   fcmToken: string,
@@ -259,46 +283,47 @@ async function sendFcm(
 
   if (!saJson && !legacyKey) return { ok: false, error: "FCM not configured" };
 
+  // ── Try FCM v1 (service account / HTTP v1 API) ─────────────────────────────
   if (saJson) {
     const accessToken = await getFirebaseAccessToken(saJson);
-    if (!accessToken) return { ok: false, error: "Could not get Firebase access token" };
+    if (accessToken) {
+      const sa = JSON.parse(saJson) as { project_id: string };
+      const msg: Record<string, unknown> = { token: fcmToken };
+      if (notification) msg.notification = notification;
+      if (Object.keys(data).length) msg.data = data;
 
-    const sa = JSON.parse(saJson) as { project_id: string };
-    const msg: Record<string, unknown> = { token: fcmToken };
-    if (notification) msg.notification = notification;
-    if (Object.keys(data).length) msg.data = data;
+      try {
+        const res = await fetch(
+          `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ message: msg }),
+          },
+        );
 
-    const res = await fetch(
-      `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
-        body: JSON.stringify({ message: msg }),
-      },
-    );
+        if (res.ok) {
+          const result = await res.json() as { name: string };
+          return { ok: true, messageId: result.name };
+        }
 
-    if (!res.ok) {
-      const errText = await res.text();
-      return { ok: false, error: `FCM v1 error ${res.status}: ${errText.slice(0, 200)}` };
+        // 404 = token unregistered in this project → fall through to legacy key
+        const errText = await res.text();
+        if (res.status !== 404 || !legacyKey) {
+          return { ok: false, error: `FCM v1 error ${res.status}: ${errText.slice(0, 300)}` };
+        }
+        // fall through to legacy below
+      } catch (e) {
+        if (!legacyKey) return { ok: false, error: `FCM v1 exception: ${String(e)}` };
+        // fall through to legacy below
+      }
     }
-    const result = await res.json() as { name: string };
-    return { ok: true, messageId: result.name };
+    // Could not get access token — fall through to legacy if available
+    if (!legacyKey) return { ok: false, error: "Could not get Firebase access token" };
   }
 
-  // Fallback: legacy FCM server key
-  const legacyBody: Record<string, unknown> = { to: fcmToken };
-  if (notification) legacyBody.notification = notification;
-  if (Object.keys(data).length) legacyBody.data = data;
-
-  const res = await fetch("https://fcm.googleapis.com/fcm/send", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `key=${legacyKey}` },
-    body: JSON.stringify(legacyBody),
-  });
-
-  if (!res.ok) return { ok: false, error: `FCM legacy error ${res.status}` };
-  const result = await res.json() as { message_id?: string; multicast_id?: number };
-  return { ok: true, messageId: String(result.message_id ?? result.multicast_id ?? "") };
+  // ── Fallback: legacy FCM server key ────────────────────────────────────────
+  return sendFcmLegacy(legacyKey!, fcmToken, data, notification);
 }
 
 function dbErrResp(error: unknown): Response | null {
@@ -1208,8 +1233,8 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
       : undefined;
 
     const result = await sendFcm(env, fcmToken, stringData, notification);
-    if (!result.ok) return json({ ok: false, error: result.error }, 502);
-    return json({ ok: true, messageId: result.messageId });
+    // Always return HTTP 200 so Android FCMHelper handles it via ok:false path (not HTTP error path)
+    return json({ ok: result.ok, messageId: result.messageId, error: result.error });
   }
 
   // GET /device/:appId/stream — SSE realtime stream (polling-based, ~25s lifetime then reconnect)
