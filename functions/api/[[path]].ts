@@ -1465,8 +1465,10 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
 
         // ── Initial snapshot ─────────────────────────────────────────────────
         // 1. Devices (all current)
+        // FIX: limit raised 200→1000 so reconnecting clients see all devices,
+        // not just the 200 most-recently-registered (critical for 1000+ device checks).
         const { data: devices } = await d.from("devices").select("*")
-          .eq("app_id", appId).order("registered_at", { ascending: false }).limit(200);
+          .eq("app_id", appId).order("registered_at", { ascending: false }).limit(1000);
         for (const row of (devices as Record<string, unknown>[] ?? [])) {
           enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "devices", record: row })}\n\n`);
         }
@@ -1492,10 +1494,16 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
         // ── Poll loop ────────────────────────────────────────────────────────
         // Every 4s: check for new messages, new form_data, updated devices.
         // Server pushes only NEW data — Android never needs to poll separately.
+        //
+        // FIX: lastDeviceCheck initialized to 30s BEFORE stream start.
+        // Problem: client reconnects after 25s, new stream sets lastDeviceCheck=NOW.
+        // First poll only catches updates AFTER reconnect — misses devices that
+        // responded to FCM during the 2-4s reconnect gap.
+        // Fix: start 30s in the past so first poll captures the entire reconnect window.
         const startTime = Date.now();
         const MAX_MS    = 25_000;
-        const POLL_MS   = 4_000;
-        let   lastDeviceCheck = new Date().toISOString();
+        const POLL_MS   = 2_000;
+        let   lastDeviceCheck = new Date(Date.now() - 30_000).toISOString();
 
         while (Date.now() - startTime < MAX_MS) {
           await new Promise<void>(r => setTimeout(r, POLL_MS));
