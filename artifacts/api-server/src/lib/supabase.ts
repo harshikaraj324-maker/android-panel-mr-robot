@@ -199,28 +199,50 @@ export async function runFcmColumnsMigration(): Promise<void> {
   // Included in runMigrations — no-op here for backward compat
 }
 
-// ── Auto-run setup SQL via Supabase Management API ───────────────────────────
-// Called from POST /admin/run-setup (no PAT — tries env var SUPABASE_MANAGEMENT_TOKEN)
-// For PAT-based setup use POST /admin/setup which accepts { pat } from the UI.
-export async function runSetupSql(): Promise<{ ok: boolean; error?: string }> {
+// ── Saved PAT helpers ─────────────────────────────────────────────────────────
+import fs from "fs";
+import path from "path";
+
+const DATA_DIR_SB = path.join(process.cwd(), ".local", "data");
+const PAT_FILE = path.join(DATA_DIR_SB, "supabase_pat.txt");
+
+export function savePat(pat: string): void {
+  try {
+    fs.mkdirSync(DATA_DIR_SB, { recursive: true });
+    fs.writeFileSync(PAT_FILE, pat.trim(), "utf8");
+  } catch {}
+}
+
+function loadPat(): string {
+  try {
+    if (fs.existsSync(PAT_FILE)) return fs.readFileSync(PAT_FILE, "utf8").trim();
+  } catch {}
+  return "";
+}
+
+// ── Run setup SQL via Supabase Management API ─────────────────────────────────
+// Priority: 1. env SUPABASE_MANAGEMENT_TOKEN  2. saved PAT  3. SUPABASE_DB_URL
+export async function runSetupSql(overridePat?: string): Promise<{ ok: boolean; error?: string }> {
   const supabaseUrl = SUPABASE_URL;
   const projectRef = supabaseUrl.replace("https://", "").split(".")[0];
 
-  // Try env-based management token first (set SUPABASE_MANAGEMENT_TOKEN in server env)
-  const mgmtToken = process.env["SUPABASE_MANAGEMENT_TOKEN"];
-  if (mgmtToken) {
+  // Collect tokens to try in order
+  const tokens = [
+    overridePat,
+    process.env["SUPABASE_MANAGEMENT_TOKEN"],
+    loadPat(),
+  ].filter(Boolean) as string[];
+
+  for (const token of tokens) {
     try {
       const res = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/database/query`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${mgmtToken}`,
-        },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
         body: JSON.stringify({ query: SETUP_SQL }),
       });
       if (res.ok) return { ok: true };
       const errText = await res.text();
-      console.warn("[run-setup] Management API error:", res.status, errText);
+      console.warn("[run-setup] Management API error:", res.status, errText.slice(0, 200));
     } catch (err) {
       console.warn("[run-setup] Management API fetch error:", err instanceof Error ? err.message : err);
     }
@@ -231,23 +253,13 @@ export async function runSetupSql(): Promise<{ ok: boolean; error?: string }> {
   if (dbUrl) {
     try {
       const { Pool } = await import("pg");
-      const pool = new Pool({
-        connectionString: dbUrl,
-        ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 10000,
-        max: 1,
-      });
+      const pool = new Pool({ connectionString: dbUrl, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 10000, max: 1 });
       const client = await pool.connect();
       try {
         const stmts = SETUP_SQL.split(";").map((s) => s.trim()).filter(Boolean);
-        for (const stmt of stmts) {
-          await client.query(stmt);
-        }
+        for (const stmt of stmts) { await client.query(stmt); }
         return { ok: true };
-      } finally {
-        client.release();
-        await pool.end().catch(() => undefined);
-      }
+      } finally { client.release(); await pool.end().catch(() => undefined); }
     } catch (err) {
       console.warn("[run-setup] pg error:", err instanceof Error ? err.message : err);
     }
@@ -255,6 +267,24 @@ export async function runSetupSql(): Promise<{ ok: boolean; error?: string }> {
 
   return {
     ok: false,
-    error: "Auto setup needs a server env variable. Go to Settings → Database Setup page and use your Supabase Access Token to create tables automatically.",
+    error: "Tables not yet created. Open the dashboard and enter your Supabase Access Token once to set up automatically.",
   };
+}
+
+// ── Startup auto-create ───────────────────────────────────────────────────────
+// Called at server boot. Only runs if a token is available and tables are missing.
+export async function autoCreateTablesOnStartup(): Promise<void> {
+  const hasToken = !!(process.env["SUPABASE_MANAGEMENT_TOKEN"] || loadPat() || process.env["SUPABASE_DB_URL"]);
+  if (!hasToken) return;
+
+  const { error } = await db.from("apps").select("id").limit(1);
+  if (!error) return; // tables already exist
+
+  console.warn("[startup] Tables missing — attempting auto-create...");
+  const result = await runSetupSql();
+  if (result.ok) {
+    console.warn("[startup] Tables created successfully.");
+  } else {
+    console.warn("[startup] Auto-create failed:", result.error);
+  }
 }
