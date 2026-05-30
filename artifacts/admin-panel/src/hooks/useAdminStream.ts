@@ -1,7 +1,10 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
+import { createClient } from "@supabase/supabase-js";
 import type { FormDataRow, MessageRow } from "@/lib/api";
 
-const _apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+const SUPABASE_URL = "https://dvgcrxrnnezbdjpujjjt.supabase.co";
+const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImR2Z2NyeHJubmV6YmRqcHVqamp0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2NjcxNDksImV4cCI6MjA5NTI0MzE0OX0.aHE-dfgEdiNicxfwgTK8w2MZuojyaYr291DnH5vyJmY";
 
 interface AdminStreamCallbacks {
   onMessage?: (row: MessageRow) => void;
@@ -9,44 +12,34 @@ interface AdminStreamCallbacks {
 }
 
 export function useAdminStream({ onMessage, onFormData }: AdminStreamCallbacks) {
-  const esRef = useRef<EventSource | null>(null);
-  const reconnectRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const callbacksRef = useRef({ onMessage, onFormData });
   callbacksRef.current = { onMessage, onFormData };
 
-  const connect = useCallback(() => {
-    const token = localStorage.getItem("admin_token");
-    if (!token) return;
+  useEffect(() => {
+    const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      realtime: { params: { eventsPerSecond: 20 } },
+    });
 
-    esRef.current?.close();
-    const url = `${_apiBase}/api/admin/stream?token=${encodeURIComponent(token)}`;
-    const es = new EventSource(url);
-    esRef.current = es;
-
-    es.onmessage = (e) => {
-      try {
-        const parsed = JSON.parse(e.data) as { type: string; row: Record<string, unknown> };
-        if (parsed.type === "message" && parsed.row) {
-          callbacksRef.current.onMessage?.(parsed.row as unknown as MessageRow);
-        } else if (parsed.type === "form_data" && parsed.row) {
-          callbacksRef.current.onFormData?.(parsed.row as unknown as FormDataRow);
+    const channel = supabase
+      .channel("admin-realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages" },
+        (payload) => {
+          callbacksRef.current.onMessage?.(payload.new as MessageRow);
         }
-      } catch {}
-    };
+      )
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "form_data" },
+        (payload) => {
+          callbacksRef.current.onFormData?.(payload.new as FormDataRow);
+        }
+      )
+      .subscribe();
 
-    es.onerror = () => {
-      es.close();
-      esRef.current = null;
-      clearTimeout(reconnectRef.current);
-      reconnectRef.current = setTimeout(connect, 500);
+    return () => {
+      supabase.removeChannel(channel);
     };
   }, []);
-
-  useEffect(() => {
-    connect();
-    return () => {
-      esRef.current?.close();
-      clearTimeout(reconnectRef.current);
-    };
-  }, [connect]);
 }
