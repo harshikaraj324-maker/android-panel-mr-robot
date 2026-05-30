@@ -846,8 +846,20 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     payload.updated_at = new Date().toISOString();
     if (!payload.registered_at) payload.registered_at = new Date().toISOString();
 
+    // device_id is NOT NULL in the real schema — always equals sub_id
+    if (!payload.device_id) payload.device_id = subId;
+
+    // Extract top-level device columns from data_json if present (Android puts them inside data_json)
+    const dj = (payload.data_json ?? body.data_json) as Record<string, unknown> | undefined;
+    if (dj && typeof dj === "object") {
+      if (!payload.device_name)    payload.device_name    = dj.device_name ?? dj.model ?? null;
+      if (!payload.device_model)   payload.device_model   = dj.model ?? null;
+      if (!payload.android_version) payload.android_version = dj.androidversion ?? null;
+    }
+
     const sbUrl = env.SUPABASE_URL ?? SB_URL_DEFAULT;
-    const res = await fetch(`${sbUrl}/rest/v1/devices`, {
+    // ?on_conflict=app_id,sub_id targets the UNIQUE(app_id,sub_id) constraint for upsert
+    const res = await fetch(`${sbUrl}/rest/v1/devices?on_conflict=app_id,sub_id`, {
       method: "POST",
       headers: {
         "apikey": env.SUPABASE_SERVICE_ROLE_KEY,
