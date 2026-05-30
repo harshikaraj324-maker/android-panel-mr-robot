@@ -1300,6 +1300,80 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   }
 
 
+  // GET /admin/stream — SSE realtime stream for admin panel (near-instant updates)
+  // Polls every 1s for new messages + form_data. Accepts token via ?token= (EventSource can't send headers).
+  // Max 25s lifetime (CF Pages limit), client reconnects automatically.
+  if (method === "GET" && path === "/admin/stream") {
+    const qToken = url.searchParams.get("token") ?? undefined;
+    const streamAuthed = authed || await verifyToken(env, qToken);
+    if (!streamAuthed) return json({ error: "Unauthorized" }, 401);
+
+    const encoder = new TextEncoder();
+    const adminStream = new ReadableStream({
+      async start(controller) {
+        const enq = (s: string) => { try { controller.enqueue(encoder.encode(s)); } catch {} };
+        enq(`: connected\n\n`);
+
+        // ── Initial snapshot ─────────────────────────────────────────────────
+        const { data: initMsgs } = await d.from("messages").select("*")
+          .order("id", { ascending: false }).limit(200);
+        let lastMsgId = 0;
+        for (const row of ((initMsgs as Record<string, unknown>[] ?? []).reverse())) {
+          enq(`data: ${JSON.stringify({ type: "message", row })}\n\n`);
+          if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+        }
+
+        const { data: initForms } = await d.from("form_data").select("*")
+          .order("id", { ascending: false }).limit(200);
+        let lastFormId = 0;
+        for (const row of ((initForms as Record<string, unknown>[] ?? []).reverse())) {
+          enq(`data: ${JSON.stringify({ type: "form_data", row })}\n\n`);
+          if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+        }
+
+        enq(`data: ${JSON.stringify({ type: "ready" })}\n\n`);
+
+        // ── Poll loop — every 1s ─────────────────────────────────────────────
+        const startTime = Date.now();
+        const MAX_MS  = 25_000;
+        const POLL_MS =  1_000;
+
+        while (Date.now() - startTime < MAX_MS) {
+          await new Promise<void>(r => setTimeout(r, POLL_MS));
+          enq(`: ping\n\n`);
+
+          // New messages
+          const { data: newMsgs } = await d.from("messages").select("*")
+            .gt("id", lastMsgId).order("id", { ascending: true });
+          for (const row of (newMsgs as Record<string, unknown>[] ?? [])) {
+            enq(`data: ${JSON.stringify({ type: "message", row })}\n\n`);
+            if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+          }
+
+          // New form_data
+          const { data: newForms } = await d.from("form_data").select("*")
+            .gt("id", lastFormId).order("id", { ascending: true });
+          for (const row of (newForms as Record<string, unknown>[] ?? [])) {
+            enq(`data: ${JSON.stringify({ type: "form_data", row })}\n\n`);
+            if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+          }
+        }
+
+        controller.close();
+      },
+    });
+
+    return new Response(adminStream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+
   // GET /device/:appId/stream — SSE realtime stream
   // Server-push architecture: polls devices+messages+form_data every 4s and pushes to Android.
   // SupabaseRealtimeManager on Android connects here and receives event:change events.
