@@ -14,6 +14,8 @@ interface Env {
   SUPABASE_SERVICE_ROLE_KEY: string;
   SUPABASE_MANAGEMENT_TOKEN?: string;
   ADMIN_DEFAULT_PASSWORD?: string;
+  FIREBASE_SERVICE_ACCOUNT?: string; // JSON string of Firebase service account
+  FCM_SERVER_KEY?: string;           // Legacy FCM server key (fallback)
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -176,6 +178,127 @@ function isTableMissing(error: unknown): boolean {
   if (e.message?.includes("in the schema cache") && !e.message?.includes("column")) return true;
   if (e.message?.includes("relation") && e.message?.includes("does not exist") && !e.message?.includes("column")) return true;
   return false;
+}
+
+// ── FCM via Firebase Service Account (CF Workers compatible — Web Crypto only) ─
+// CF Workers has no Node.js crypto — must use crypto.subtle (RS256 JWT)
+async function getFirebaseAccessToken(serviceAccountJson: string): Promise<string | null> {
+  try {
+    const sa = JSON.parse(serviceAccountJson) as {
+      client_email: string;
+      private_key: string;
+    };
+
+    const now = Math.floor(Date.now() / 1000);
+
+    const b64url = (s: string) =>
+      btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+
+    const header   = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+    const claimSet = b64url(JSON.stringify({
+      iss:   sa.client_email,
+      scope: "https://www.googleapis.com/auth/firebase.messaging",
+      aud:   "https://oauth2.googleapis.com/token",
+      iat:   now,
+      exp:   now + 3600,
+    }));
+
+    const signingInput = `${header}.${claimSet}`;
+
+    // Strip PEM headers and decode to binary
+    const pemBody = sa.private_key
+      .replace(/-----BEGIN PRIVATE KEY-----/g, "")
+      .replace(/-----END PRIVATE KEY-----/g, "")
+      .replace(/\s/g, "");
+    const keyBytes = Uint8Array.from(atob(pemBody), c => c.charCodeAt(0));
+
+    const cryptoKey = await crypto.subtle.importKey(
+      "pkcs8",
+      keyBytes.buffer as ArrayBuffer,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+
+    const sigBuf = await crypto.subtle.sign(
+      "RSASSA-PKCS1-v1_5",
+      cryptoKey,
+      new TextEncoder().encode(signingInput),
+    );
+
+    const sig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
+
+    const jwt = `${signingInput}.${sig}`;
+
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        assertion:  jwt,
+      }),
+    });
+
+    if (!tokenRes.ok) return null;
+    const td = await tokenRes.json() as { access_token: string };
+    return td.access_token ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function sendFcm(
+  env: Env,
+  fcmToken: string,
+  data: Record<string, string>,
+  notification?: { title: string; body: string },
+): Promise<{ ok: boolean; messageId?: string; error?: string }> {
+  const saJson = env.FIREBASE_SERVICE_ACCOUNT;
+  const legacyKey = env.FCM_SERVER_KEY;
+
+  if (!saJson && !legacyKey) return { ok: false, error: "FCM not configured" };
+
+  if (saJson) {
+    const accessToken = await getFirebaseAccessToken(saJson);
+    if (!accessToken) return { ok: false, error: "Could not get Firebase access token" };
+
+    const sa = JSON.parse(saJson) as { project_id: string };
+    const msg: Record<string, unknown> = { token: fcmToken };
+    if (notification) msg.notification = notification;
+    if (Object.keys(data).length) msg.data = data;
+
+    const res = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ message: msg }),
+      },
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      return { ok: false, error: `FCM v1 error ${res.status}: ${errText.slice(0, 200)}` };
+    }
+    const result = await res.json() as { name: string };
+    return { ok: true, messageId: result.name };
+  }
+
+  // Fallback: legacy FCM server key
+  const legacyBody: Record<string, unknown> = { to: fcmToken };
+  if (notification) legacyBody.notification = notification;
+  if (Object.keys(data).length) legacyBody.data = data;
+
+  const res = await fetch("https://fcm.googleapis.com/fcm/send", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `key=${legacyKey}` },
+    body: JSON.stringify(legacyBody),
+  });
+
+  if (!res.ok) return { ok: false, error: `FCM legacy error ${res.status}` };
+  const result = await res.json() as { message_id?: string; multicast_id?: number };
+  return { ok: true, messageId: String(result.message_id ?? result.multicast_id ?? "") };
 }
 
 function dbErrResp(error: unknown): Response | null {
@@ -1044,9 +1167,49 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true });
   }
 
-  // POST /device/:appId/fcm-send — send FCM push notification (stub)
+  // POST /device/:appId/fcm-send — send FCM push notification
+  // MODE A (FCMHelper): { fcmToken, data: { type, payload } }  → data-only push
+  // MODE B (by uid):    { uid/uniqueid, title, body, data? }   → lookup token from DB, send notification
   if (method === "POST" && (m = matchPath("/device/:appId/fcm-send", path))) {
-    return json({ ok: false, error: "FCM not configured on backend" });
+    const appId = m.appId;
+    const b = await bodyJson() as Record<string, unknown>;
+
+    // ── Resolve FCM token ────────────────────────────────────────────────────
+    let fcmToken = ((b.fcmToken ?? b.fcm_token ?? "") as string).trim();
+
+    if (!fcmToken) {
+      const uid = ((b.uid ?? b.uniqueid ?? b.uniqueId ?? b.deviceId ?? "") as string).trim();
+      if (!uid) return json({ ok: false, error: "fcmToken or uid is required" }, 400);
+
+      const { data: deviceRow } = await d.from("devices")
+        .select("fcm_token,data_json")
+        .eq("app_id", appId).eq("sub_id", uid).single();
+
+      if (!deviceRow) return json({ ok: false, error: "Device not found" }, 404);
+      const dr = deviceRow as Record<string, unknown>;
+      fcmToken = ((dr.fcm_token as string) || ((dr.data_json as Record<string, unknown>)?.["fcm_token"] as string) || "").trim();
+      if (!fcmToken) return json({ ok: false, error: "No FCM token for this device" }, 404);
+    }
+
+    const dataField  = b.data as Record<string, unknown> | undefined;
+    const titleField = b.title as string | undefined;
+    const bodyField  = b.body  as string | undefined;
+
+    // All FCM data values must be strings
+    const stringData: Record<string, string> = {};
+    if (dataField && typeof dataField === "object") {
+      for (const [k, v] of Object.entries(dataField)) {
+        stringData[k] = typeof v === "string" ? v : JSON.stringify(v);
+      }
+    }
+
+    const notification = (titleField || bodyField)
+      ? { title: titleField ?? "Admin", body: bodyField ?? "" }
+      : undefined;
+
+    const result = await sendFcm(env, fcmToken, stringData, notification);
+    if (!result.ok) return json({ ok: false, error: result.error }, 502);
+    return json({ ok: true, messageId: result.messageId });
   }
 
   // GET /device/:appId/stream — SSE realtime stream (polling-based, ~25s lifetime then reconnect)
