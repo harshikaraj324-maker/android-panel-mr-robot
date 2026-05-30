@@ -103,7 +103,8 @@ export const api = {
   extendSession: (appId: string) => req<{ ok: boolean; expires_at: string }>(`/admin/app-ids/${appId}/extend`, { method: "POST" }),
   setStatus:     (appId: string, status: string) =>
     req<{ ok: boolean }>(`/admin/app-ids/${appId}/toggle`, { method: "PATCH", body: JSON.stringify({ status }) }),
-  deleteAppId:   (appId: string) => req<{ ok: boolean }>(`/admin/app-ids/${appId}`, { method: "DELETE" }),
+  deleteAppId:       (appId: string) => req<{ ok: boolean }>(`/admin/app-ids/${appId}`, { method: "DELETE" }),
+  logoutAllSessions: (appId: string) => req<{ ok: boolean; count: number }>(`/admin/app-ids/${appId}/logout-all`, { method: "POST" }),
   // Devices
   listDevices:   (filters?: { app_id?: string; sub_id?: string }) => {
     const p = new URLSearchParams();
@@ -134,6 +135,8 @@ export const api = {
     return req<FormDataRow[]>(`/admin/form-data${p.toString() ? `?${p}` : ""}`);
   },
   deleteFormData: (id: number) => req<{ ok: boolean }>(`/admin/form-data/${id}`, { method: "DELETE" }),
+  pushForm: (body: { app_id: string; sub_id?: string; form_type: string; data: Record<string, unknown> }) =>
+    req<{ ok: boolean }>("/submit-form", { method: "POST", body: JSON.stringify(body) }),
 
   // Messages
   listMessages: (filters?: { app_id?: string; sub_id?: string }) => {
