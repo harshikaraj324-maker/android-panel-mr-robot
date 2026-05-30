@@ -1248,19 +1248,22 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true });
   }
 
-  // GET /device/:appId/messages — list SMS messages (supports ?uid=&limit=)
+  // GET /device/:appId/messages — paginated SMS (supports ?uid=&limit=&offset=)
   if (method === "GET" && (m = matchPath("/device/:appId/messages", path))) {
-    const appId = m.appId;
-    const uid   = url.searchParams.get("uid");
-    const limit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "200") || 200));
+    const appId  = m.appId;
+    const uid    = url.searchParams.get("uid");
+    const limit  = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit") ?? "100") || 100));
+    const offset = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0") || 0);
 
-    let q = d.from("messages").select("*").eq("app_id", appId)
-      .order("sent_at", { ascending: false }).limit(limit);
+    // Apply ALL filters FIRST, then order + range (same pattern as form-data fix)
+    let q = d.from("messages").select("*").eq("app_id", appId);
     if (uid) q = q.eq("sub_id", uid);
+    q = q.order("sent_at", { ascending: false }).range(offset, offset + limit - 1);
 
     const { data, error } = await q;
-    if (error) return json({ data: [] });
-    return json({ data: data ?? [] });
+    const rows    = data ?? [];
+    const hasMore = !error && rows.length === limit;
+    return json({ data: rows, has_more: hasMore, offset, limit });
   }
 
   // DELETE /device/:appId/messages/:msgId — delete a single message
