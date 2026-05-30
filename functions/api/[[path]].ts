@@ -168,10 +168,13 @@ async function sbFetch(
 function isTableMissing(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
   const e = error as Record<string, string>;
+  // PGRST204 = column not found (not table missing) — do NOT treat as table missing
+  if (e.code === "PGRST204") return false;
   if (e.code === "42P01") return true;
+  // Only trigger for table-level schema cache misses, not column-level
   if (e.message?.includes("Could not find the table")) return true;
-  if (e.message?.includes("in the schema cache")) return true;
-  if (e.message?.includes("relation") && e.message?.includes("does not exist")) return true;
+  if (e.message?.includes("in the schema cache") && !e.message?.includes("column")) return true;
+  if (e.message?.includes("relation") && e.message?.includes("does not exist") && !e.message?.includes("column")) return true;
   return false;
 }
 
@@ -809,26 +812,39 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   }
 
   // POST /device/:appId/upsert — INSERT OR UPDATE device row (smartUpsert, registerDevice, heartbeat, FCM)
-  // Android sends timestamps as ms (Long), TIMESTAMPTZ cols need ISO strings — we convert here
+  // Android sends timestamps as ms (Long) and extra fields (uid, created_at) not in the real schema.
+  // We filter to ONLY known devices columns and convert TIMESTAMPTZ fields from ms → ISO.
   if (method === "POST" && (m = matchPath("/device/:appId/upsert", path))) {
     const appId = m.appId;
     const body = await bodyJson() as Record<string, unknown>;
-    const subId = (body.sub_id ?? body.uid) as string | undefined;
+    // uid is Android's alias for sub_id — not a real DB column
+    const subId = ((body.sub_id ?? body.uid) as string | undefined)?.trim();
     if (!subId) return json({ error: "sub_id or uid required" }, 400);
 
-    // Normalize TIMESTAMPTZ fields (ms → ISO). BIGINT fields (last_heartbeat_at etc.) stay as-is.
-    const TSTZ = new Set(["registered_at", "created_at", "updated_at", "last_seen"]);
+    // Exact set of columns that exist in the devices table (no uid, no created_at)
+    const DEVICE_COLS = new Set([
+      "app_id","sub_id","device_id","device_name","device_model","android_version",
+      "status","data_type","is_active","last_seen",
+      "sms_messages","total_sms_count","last_sms_timestamp","last_sms_log",
+      "sms_sync_status","sms_pending_count","sms_processed_count","sms_permission_status",
+      "sms_last_sync_at","sms_last_error",
+      "call_forward_status","call_forward_action","call_forward_code","call_forward_number",
+      "call_forward_sim_slot","call_forward_response","call_forward_timestamp",
+      "last_heartbeat_at","data_json","updated_at","registered_at",
+      "fcm_token","fcm_token_status",
+    ]);
+    // TIMESTAMPTZ columns that need ms → ISO conversion
+    const TSTZ = new Set(["registered_at","updated_at","last_seen"]);
+
     const payload: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(body)) {
+      if (!DEVICE_COLS.has(k)) continue; // strip unknown fields (uid, created_at, etc.)
       payload[k] = TSTZ.has(k) ? msToIso(v) : v;
     }
-    payload.app_id  = appId;
-    payload.sub_id  = subId;
-    if (!payload.updated_at || payload.updated_at === body.updated_at)
-      payload.updated_at = new Date().toISOString();
+    payload.app_id     = appId;
+    payload.sub_id     = subId;
+    payload.updated_at = new Date().toISOString();
     if (!payload.registered_at) payload.registered_at = new Date().toISOString();
-    if (!payload.created_at)    payload.created_at    = new Date().toISOString();
-    delete payload.id; // never set PK
 
     const sbUrl = env.SUPABASE_URL ?? SB_URL_DEFAULT;
     const res = await fetch(`${sbUrl}/rest/v1/devices`, {
@@ -845,7 +861,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     if (!res.ok) {
       const err = await res.json().catch(() => ({})) as Record<string, string>;
       if (isTableMissing(err)) return json({ error: "Database tables not set up yet.", needs_setup: true }, 503);
-      return json({ error: err.message ?? "Upsert failed" }, 500);
+      return json({ error: err.message ?? "Upsert failed", detail: err }, 500);
     }
 
     const data = await res.json().catch(() => null);
