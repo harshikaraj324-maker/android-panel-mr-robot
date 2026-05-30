@@ -1277,29 +1277,24 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true });
   }
 
-  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=&offset=&form_type=)
-  // Paginated: default limit=50, max=200, offset for page navigation.
-  // Response: { data: [...], has_more: bool, offset, limit }
+  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=&form_type=)
+  // Use .limit() only — .range() causes HTTP 500 on Cloudflare Pages.
+  // Response: { data: [...] }
   if (method === "GET" && (m = matchPath("/device/:appId/form-data", path))) {
     const appId    = m.appId;
     const uid      = url.searchParams.get("uid");
     const formType = url.searchParams.get("form_type");
-    const limit    = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") ?? "50") || 50));
-    const offset   = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0") || 0);
+    const limit    = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit") ?? "500") || 500));
 
-    // FIX: apply ALL filters FIRST, then order + range.
-    // Old bug: .range() was before .eq("sub_id"), so Supabase took the first
-    // 50 rows of ALL devices, then filtered by uid → device rows were missed.
+    // Apply ALL filters FIRST, then order + limit.
     let q = d.from("form_data").select("*").eq("app_id", appId);
     if (uid) q = q.eq("sub_id", uid);
     if (formType) q = q.eq("form_type", formType);
-    q = q.order("submitted_at", { ascending: false }).range(offset, offset + limit - 1);
+    q = q.order("submitted_at", { ascending: false }).limit(limit);
 
     const { data, error } = await q;
-    // Supabase may return error when range is out-of-bounds (no rows) — treat as empty
-    const rows    = data ?? [];
-    const hasMore = !error && rows.length === limit;
-    return json({ data: rows, has_more: hasMore, offset, limit });
+    if (error) return json({ data: [] });
+    return json({ data: data ?? [] });
   }
 
   // GET /device/:appId/admin-config — get call forward config
