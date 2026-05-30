@@ -1,0 +1,2 @@
+# SPA routing — admin panel only at /mr-robot/mr-perfect/
+/mr-robot/mr-perfect/* /mr-robot/mr-perfect/index.html 200
