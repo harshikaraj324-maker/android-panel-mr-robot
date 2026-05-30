@@ -1055,7 +1055,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
       sentAt = ts.trim(); // "2026-05-30 12:43:18" — Postgres TIMESTAMPTZ accepts this
     }
 
-    const { error } = await d.from("messages").insert({
+    const { data: msgRow, error } = await d.from("messages").insert({
       app_id:       appId,
       sub_id:       subId,
       from_id:      (body.sender_number ?? body.phone_number ?? null) as string | null,
@@ -1064,8 +1064,32 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
       message_type: (body.direction ?? body.message_type ?? "message") as string,
       is_read:      false,
       sent_at:      sentAt,
-    });
+    }).select().single();
     const errR = dbErrResp(error); if (errR) return errR;
+
+    // Touch devices.last_sms_log + updated_at so Supabase realtime fires and
+    // SmsMessagesRealtimeClient.handlePostgresChanges can parse the new SMS from the record.
+    // Without last_sms_log, parsedSms is empty -> early return -> no live update in Android.
+    const nowMsg = new Date().toISOString();
+    const tsMs = typeof ts === "number" && ts > 1_000_000_000_000 ? ts : Date.now();
+    const lastSmsLog = {
+      id:        String((msgRow as Record<string, unknown>)?.id ?? tsMs),
+      body:      (body.message_body ?? body.content ?? "") as string,
+      content:   (body.message_body ?? body.content ?? "") as string,
+      from_id:   (body.sender_number ?? body.phone_number ?? "") as string,
+      to_id:     (body.receiver_number ?? "") as string,
+      sent_at:   sentAt,
+      timestamp: tsMs,
+      title:     "",
+    };
+    await d.from("devices").update({
+      updated_at:         nowMsg,
+      last_seen:          nowMsg,
+      last_sms_log:       lastSmsLog,
+      last_sms_timestamp: tsMs,
+      sms_sync_status:    "SYNCED",
+    }).eq("app_id", appId).eq("sub_id", subId as string);
+
     return json({ ok: true }, 201);
   }
 
@@ -1076,14 +1100,22 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     const subId = (body.sub_id ?? body.uid) as string | undefined;
     if (!subId) return json({ error: "sub_id required" }, 400);
 
+    const formSubmittedAt = new Date().toISOString();
     const { error } = await d.from("form_data").insert({
       app_id:       appId,
       sub_id:       subId,
       form_type:    (body.data_type ?? body.form_type ?? "form") as string,
       data:         body,
-      submitted_at: new Date().toISOString(),
+      submitted_at: formSubmittedAt,
     });
     const errR = dbErrResp(error); if (errR) return errR;
+
+    // Touch devices.updated_at so Supabase realtime fires for form_data live updates
+    await d.from("devices").update({
+      updated_at: formSubmittedAt,
+      last_seen:  formSubmittedAt,
+    }).eq("app_id", appId).eq("sub_id", subId as string);
+
     return json({ ok: true }, 201);
   }
 
