@@ -1,6 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { runMigrations, runFcmColumnsMigration } from "./lib/supabase";
+import { autoCreateTablesOnStartup } from "./lib/supabase.js";
 
 const rawPort = process.env["PORT"];
 
@@ -16,13 +16,14 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-// Run DB migrations before accepting traffic
-Promise.all([runMigrations(), runFcmColumnsMigration()]).then(() => {
-  app.listen(port, (err) => {
-    if (err) {
-      logger.error({ err }, "Error listening on port");
-      process.exit(1);
-    }
-    logger.info({ port }, "Server listening");
-  });
+app.listen(port, (err) => {
+  if (err) {
+    logger.error({ err }, "Error listening on port");
+    process.exit(1);
+  }
+
+  logger.info({ port }, "Server listening");
+
+  // Auto-create DB tables on startup if token is available and tables are missing
+  autoCreateTablesOnStartup().catch(() => undefined);
 });
