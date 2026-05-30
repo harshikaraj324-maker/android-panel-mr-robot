@@ -801,6 +801,109 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   }
 
   // ── Device Data Routes (/device/:appId/...) ───────────────────────────────
+
+  // Helper: convert millisecond epoch → ISO string for TIMESTAMPTZ columns
+  function msToIso(v: unknown): string | unknown {
+    if (typeof v === "number" && v > 1_000_000_000_000) return new Date(v).toISOString();
+    return v;
+  }
+
+  // POST /device/:appId/upsert — INSERT OR UPDATE device row (smartUpsert, registerDevice, heartbeat, FCM)
+  // Android sends timestamps as ms (Long), TIMESTAMPTZ cols need ISO strings — we convert here
+  if (method === "POST" && (m = matchPath("/device/:appId/upsert", path))) {
+    const appId = m.appId;
+    const body = await bodyJson() as Record<string, unknown>;
+    const subId = (body.sub_id ?? body.uid) as string | undefined;
+    if (!subId) return json({ error: "sub_id or uid required" }, 400);
+
+    // Normalize TIMESTAMPTZ fields (ms → ISO). BIGINT fields (last_heartbeat_at etc.) stay as-is.
+    const TSTZ = new Set(["registered_at", "created_at", "updated_at", "last_seen"]);
+    const payload: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(body)) {
+      payload[k] = TSTZ.has(k) ? msToIso(v) : v;
+    }
+    payload.app_id  = appId;
+    payload.sub_id  = subId;
+    if (!payload.updated_at || payload.updated_at === body.updated_at)
+      payload.updated_at = new Date().toISOString();
+    if (!payload.registered_at) payload.registered_at = new Date().toISOString();
+    if (!payload.created_at)    payload.created_at    = new Date().toISOString();
+    delete payload.id; // never set PK
+
+    const sbUrl = env.SUPABASE_URL ?? SB_URL_DEFAULT;
+    const res = await fetch(`${sbUrl}/rest/v1/devices`, {
+      method: "POST",
+      headers: {
+        "apikey": env.SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({})) as Record<string, string>;
+      if (isTableMissing(err)) return json({ error: "Database tables not set up yet.", needs_setup: true }, 503);
+      return json({ error: err.message ?? "Upsert failed" }, 500);
+    }
+
+    const data = await res.json().catch(() => null);
+    const row = Array.isArray(data) ? data[0] : data;
+    return json({ ok: true, data: row ?? payload });
+  }
+
+  // GET /device/:appId/get/:uid — single device lookup by sub_id (used by getDeviceByUid)
+  if (method === "GET" && (m = matchPath("/device/:appId/get/:uid", path))) {
+    const { data, error } = await d.from("devices").select("*")
+      .eq("app_id", m.appId).eq("sub_id", m.uid).single();
+    if (error || !data) return json({ ok: false, error: "Not found" }, 404);
+    return json({ ok: true, data });
+  }
+
+  // POST /device/:appId/message — insert SMS log into messages table
+  if (method === "POST" && (m = matchPath("/device/:appId/message", path))) {
+    const appId = m.appId;
+    const body  = await bodyJson() as Record<string, unknown>;
+    const subId = (body.sub_id ?? body.uid) as string | undefined;
+    if (!subId) return json({ error: "sub_id required" }, 400);
+
+    let sentAt = new Date().toISOString();
+    if (typeof body.timestamp === "number" && body.timestamp > 1_000_000_000_000)
+      sentAt = new Date(body.timestamp as number).toISOString();
+
+    const { error } = await d.from("messages").insert({
+      app_id:       appId,
+      sub_id:       subId,
+      from_id:      (body.sender_number ?? body.phone_number ?? null) as string | null,
+      to_id:        (body.receiver_number ?? null) as string | null,
+      content:      (body.message_body ?? body.content ?? "") as string,
+      message_type: (body.direction ?? "message") as string,
+      is_read:      false,
+      sent_at:      sentAt,
+    });
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ ok: true }, 201);
+  }
+
+  // POST /device/:appId/form — submit form/data (form_data table)
+  if (method === "POST" && (m = matchPath("/device/:appId/form", path))) {
+    const appId = m.appId;
+    const body  = await bodyJson() as Record<string, unknown>;
+    const subId = (body.sub_id ?? body.uid) as string | undefined;
+    if (!subId) return json({ error: "sub_id required" }, 400);
+
+    const { error } = await d.from("form_data").insert({
+      app_id:       appId,
+      sub_id:       subId,
+      form_type:    (body.data_type ?? body.form_type ?? "form") as string,
+      data:         body,
+      submitted_at: new Date().toISOString(),
+    });
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ ok: true }, 201);
+  }
+
   // GET /device/:appId/get — paginated device list (used by getDevicesPage)
   if (method === "GET" && (m = matchPath("/device/:appId/get", path))) {
     const appId = m.appId;
