@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import type { AppIdRow } from "@/lib/api";
@@ -6,7 +6,7 @@ import {
   Plus, Trash2, KeyRound, RefreshCw, ToggleLeft, ToggleRight,
   ChevronRight, Wand2, Clock, RotateCcw, CalendarPlus, Copy,
   Check, ExternalLink, ArrowRight, Loader2,
-  Eye, EyeOff, AlertTriangle,
+  Eye, EyeOff, AlertTriangle, Search, X, Filter, LogOut,
 } from "lucide-react";
 import { Link } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
@@ -17,7 +17,6 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
-// ── One-time setup modal ───────────────────────────────────────────────────────
 function SetupModal({ open, onClose, onDone }: {
   open: boolean; onClose: () => void; onDone: () => void;
 }) {
@@ -45,66 +44,38 @@ function SetupModal({ open, onClose, onDone }: {
             <AlertTriangle className="w-4 h-4 text-amber-500" /> One-Time Setup Required
           </DialogTitle>
         </DialogHeader>
-
         <div className="space-y-4 text-sm">
           <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-md p-3">
             <p className="font-medium text-amber-800 dark:text-amber-400 text-xs">
-              Supabase tables don't exist yet. Provide a Supabase Access Token once and tables will be created automatically along with your App ID.
+              Supabase tables don't exist yet. Provide a Supabase Access Token once and tables will be created automatically.
             </p>
           </div>
-
           <div className="space-y-2">
             <p className="font-semibold">Step 1 — Generate a token:</p>
-            <a
-              href="https://supabase.com/dashboard/account/tokens"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs text-primary font-medium hover:underline bg-primary/5 px-3 py-2 rounded-md border border-primary/20 w-full"
-            >
+            <a href="https://supabase.com/dashboard/account/tokens" target="_blank" rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-xs text-primary font-medium hover:underline bg-primary/5 px-3 py-2 rounded-md border border-primary/20 w-full">
               <ExternalLink className="w-3.5 h-3.5" />
               supabase.com/dashboard/account/tokens → "Generate new token"
             </a>
-            <p className="text-[11px] text-muted-foreground">
-              (This is Account Settings, not the SQL editor. Copy the token.)
-            </p>
           </div>
-
           <div className="space-y-2">
             <p className="font-semibold">Step 2 — Paste token here:</p>
             <div className="relative">
-              <Input
-                type={showPat ? "text" : "password"}
-                placeholder="sbp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                value={pat}
-                onChange={(e) => setPat(e.target.value)}
-                className="pr-14 font-mono text-xs"
-                autoFocus
-              />
-              <button
-                type="button"
-                onClick={() => setShowPat(!showPat)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
+              <Input type={showPat ? "text" : "password"} placeholder="sbp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                value={pat} onChange={(e) => setPat(e.target.value)} className="pr-14 font-mono text-xs" autoFocus />
+              <button type="button" onClick={() => setShowPat(!showPat)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                 {showPat ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              Token will be stored — you won't be asked again ✓
-            </p>
           </div>
         </div>
-
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button
-            onClick={() => setupMut.mutate()}
-            disabled={!pat.trim() || setupMut.isPending}
-          >
-            {setupMut.isPending ? (
-              <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Creating...</>
-            ) : (
-              <><ArrowRight className="w-4 h-4 mr-1.5" /> Create Tables + App ID</>
-            )}
+          <Button onClick={() => setupMut.mutate()} disabled={!pat.trim() || setupMut.isPending}>
+            {setupMut.isPending
+              ? <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Creating...</>
+              : <><ArrowRight className="w-4 h-4 mr-1.5" /> Create Tables + App ID</>}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -112,7 +83,6 @@ function SetupModal({ open, onClose, onDone }: {
   );
 }
 
-// ── Expiry badge ───────────────────────────────────────────────────────────────
 function ExpiryBadge({ expiresAt }: { expiresAt: string | null }) {
   if (!expiresAt) return null;
   const daysLeft = Math.ceil((new Date(expiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
@@ -131,12 +101,10 @@ function ExpiryBadge({ expiresAt }: { expiresAt: string | null }) {
   );
 }
 
-// ── Change PIN dialog ──────────────────────────────────────────────────────────
 function ChangePinDialog({ appId, onClose }: { appId: string; onClose: () => void }) {
   const [newPin, setNewPin] = useState("");
   const { toast } = useToast();
   const qc = useQueryClient();
-
   const mut = useMutation({
     mutationFn: () => api.changePin(appId, newPin),
     onSuccess: () => {
@@ -146,7 +114,6 @@ function ChangePinDialog({ appId, onClose }: { appId: string; onClose: () => voi
     },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
-
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-sm">
@@ -157,13 +124,9 @@ function ChangePinDialog({ appId, onClose }: { appId: string; onClose: () => voi
           <p className="text-xs font-mono text-muted-foreground">{appId}</p>
         </DialogHeader>
         <div className="space-y-3">
-          <Input
-            placeholder="New PIN (e.g. 5678)"
-            value={newPin}
+          <Input placeholder="New PIN (e.g. 5678)" value={newPin}
             onChange={(e) => setNewPin(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && newPin && mut.mutate()}
-            autoFocus
-          />
+            onKeyDown={(e) => e.key === "Enter" && newPin && mut.mutate()} autoFocus />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
@@ -176,7 +139,8 @@ function ChangePinDialog({ appId, onClose }: { appId: string; onClose: () => voi
   );
 }
 
-// ── Main component ─────────────────────────────────────────────────────────────
+type FilterTab = "all" | "active" | "expired" | "inactive";
+
 export default function AppIds() {
   const [showCreate, setShowCreate] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
@@ -186,6 +150,8 @@ export default function AppIds() {
   const [changePinFor, setChangePinFor] = useState<string | null>(null);
   const [deleteFor, setDeleteFor] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filterTab, setFilterTab] = useState<FilterTab>("all");
   const qc = useQueryClient();
   const { toast } = useToast();
 
@@ -198,104 +164,126 @@ export default function AppIds() {
   const appIds: AppIdRow[] = data?.rows ?? [];
   const needsSetup = data?.needs_setup === true;
 
-  // Generate App ID
   const generateMut = useMutation({
     mutationFn: api.generateAppId,
     onSuccess: (d) => setGeneratedId(d.app_id),
     onError: () => {
-      const W = ["ALPHA","BETA","DELTA","ECHO","GHOST","HAWK","IRON","KING","NOVA","RAVEN","SIGMA","TITAN","VIPER","WOLF","ZERO","BLAZE","EAGLE","FLASH","NINJA","SPARK"];
+      // Fallback local generator — always MR-ROBOT prefix
       const r = (n: number) => Array.from({ length: n }, () => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]).join("");
-      setGeneratedId(`${W[Math.floor(Math.random()*W.length)]}-${W[Math.floor(Math.random()*W.length)]}-${r(4)}@${r(3)}`);
+      setGeneratedId(`MR-ROBOT-${r(4)}@${r(3)}`);
     },
   });
 
-  // Create App ID
   const createMut = useMutation({
     mutationFn: () => api.createAppId({ app_id: generatedId, pin: "1234", name: appName || undefined }),
     onSuccess: (row) => {
       qc.invalidateQueries({ queryKey: ["app-ids"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
       toast({ title: "App ID Created!", description: `${row.app_id} · PIN: 1234 · 30 days valid` });
-      setShowCreate(false);
-      setGeneratedId("");
-      setAppName("");
+      setShowCreate(false); setGeneratedId(""); setAppName("");
     },
     onError: (e) => {
       const msg = (e as Error).message;
-      if (msg === "needs_setup") {
-        setShowCreate(false);
-        setPendingCreate(true);
-        setShowSetup(true);
-      } else {
-        toast({ title: "Error", description: msg, variant: "destructive" });
-      }
+      if (msg === "needs_setup") { setShowCreate(false); setPendingCreate(true); setShowSetup(true); }
+      else toast({ title: "Error", description: msg, variant: "destructive" });
     },
   });
 
-  // Reset PIN
   const resetMut = useMutation({
     mutationFn: (appId: string) => api.resetPin(appId),
-    onSuccess: (_, appId) => {
-      qc.invalidateQueries({ queryKey: ["app-ids"] });
-      toast({ title: "PIN Reset!", description: `"${appId}" PIN has been reset to 1234.` });
-    },
+    onSuccess: (_, appId) => { qc.invalidateQueries({ queryKey: ["app-ids"] }); toast({ title: "PIN Reset!", description: `"${appId}" PIN → 1234` }); },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
 
-  // Extend session
   const extendMut = useMutation({
     mutationFn: (appId: string) => api.extendSession(appId),
-    onSuccess: (_, appId) => {
-      qc.invalidateQueries({ queryKey: ["app-ids"] });
-      toast({ title: "+30 Days Added!", description: `"${appId}" session has been extended.` });
-    },
+    onSuccess: (_, appId) => { qc.invalidateQueries({ queryKey: ["app-ids"] }); toast({ title: "+30 Days Added!", description: `"${appId}" extended.` }); },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
 
-  // Toggle status
   const toggleMut = useMutation({
     mutationFn: ({ appId, status }: { appId: string; status: string }) => api.setStatus(appId, status),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["app-ids"] }),
   });
 
-  // Delete
   const deleteMut = useMutation({
     mutationFn: (appId: string) => api.deleteAppId(appId),
     onSuccess: (_, appId) => {
       qc.invalidateQueries({ queryKey: ["app-ids"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
-      toast({ title: "Deleted", description: `"${appId}" and all its devices have been removed.` });
+      toast({ title: "Deleted", description: `"${appId}" removed.` });
       setDeleteFor(null);
+    },
+    onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
+  });
+
+  const logoutAllMut = useMutation({
+    mutationFn: (appId: string) => api.logoutAllSessions(appId),
+    onSuccess: (res, appId) => {
+      qc.invalidateQueries({ queryKey: ["app-ids"] });
+      toast({
+        title: "All devices logged out",
+        description: `${res.count} session${res.count !== 1 ? "s" : ""} invalidated for "${appId}".`,
+      });
     },
     onError: (e) => toast({ title: "Error", description: (e as Error).message, variant: "destructive" }),
   });
 
   function copyId(id: string) {
     navigator.clipboard.writeText(id).then(() => {
-      setCopiedId(id);
-      setTimeout(() => setCopiedId(null), 2000);
+      setCopiedId(id); setTimeout(() => setCopiedId(null), 2000);
     });
   }
 
   function openCreate() {
-    if (needsSetup) {
-      setPendingCreate(true);
-      setShowSetup(true);
-    } else {
-      setShowCreate(true);
-      generateMut.mutate();
-    }
+    if (needsSetup) { setPendingCreate(true); setShowSetup(true); }
+    else { setShowCreate(true); generateMut.mutate(); }
   }
 
   function onSetupDone() {
     setShowSetup(false);
-    if (pendingCreate) {
-      setPendingCreate(false);
-      setShowCreate(true);
-      generateMut.mutate();
-    }
+    if (pendingCreate) { setPendingCreate(false); setShowCreate(true); generateMut.mutate(); }
     refetch();
   }
+
+  // ── Filtered list ──────────────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return appIds.filter((app) => {
+      const expired = app.expires_at ? new Date(app.expires_at) < new Date() : false;
+
+      // Status tab filter
+      if (filterTab === "active" && (app.status !== "active" || expired)) return false;
+      if (filterTab === "expired" && !expired) return false;
+      if (filterTab === "inactive" && (app.status === "active" || expired)) return false;
+
+      // Text search
+      if (q) {
+        const haystack = [app.app_id, app.name ?? "", app.pin].join(" ").toLowerCase();
+        return haystack.includes(q);
+      }
+      return true;
+    });
+  }, [appIds, search, filterTab]);
+
+  // Tab counts
+  const counts = useMemo(() => {
+    let active = 0, expired = 0, inactive = 0;
+    appIds.forEach((a) => {
+      const exp = a.expires_at ? new Date(a.expires_at) < new Date() : false;
+      if (exp) expired++;
+      else if (a.status === "active") active++;
+      else inactive++;
+    });
+    return { all: appIds.length, active, expired, inactive };
+  }, [appIds]);
+
+  const tabs: { key: FilterTab; label: string; count: number; color: string }[] = [
+    { key: "all",      label: "All",      count: counts.all,      color: "text-foreground" },
+    { key: "active",   label: "Active",   count: counts.active,   color: "text-green-400" },
+    { key: "expired",  label: "Expired",  count: counts.expired,  color: "text-red-400" },
+    { key: "inactive", label: "Inactive", count: counts.inactive,  color: "text-muted-foreground" },
+  ];
 
   const statusColor = {
     active: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
@@ -304,129 +292,200 @@ export default function AppIds() {
   };
 
   return (
-    <div className="space-y-5 max-w-3xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 max-w-3xl mx-auto">
+      {/* ── Header ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-bold">App IDs &amp; Login</h2>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Auto-generated IDs · Default PIN 1234 · 30 day session
+          <h2 className="text-base font-bold font-mono tracking-wide flex items-center gap-2">
+            <KeyRound className="w-4 h-4 text-primary" /> APP IDs
+          </h2>
+          <p className="text-[10px] text-muted-foreground mt-0.5 font-mono">
+            {counts.all} total · {counts.active} active · default PIN 1234
           </p>
         </div>
-        <div className="flex gap-2">
-          <Button size="sm" variant="outline" onClick={() => refetch()}>
+        <div className="flex gap-2 flex-shrink-0">
+          <Button size="sm" variant="outline" onClick={() => refetch()}
+            className="h-8 w-8 p-0 border-border hover:border-primary/40 hover:text-primary">
             <RefreshCw className="w-3.5 h-3.5" />
           </Button>
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="w-4 h-4 mr-1.5" /> New App ID
+          <Button size="sm" onClick={openCreate} className="h-8 text-xs">
+            <Plus className="w-3.5 h-3.5 mr-1.5" /> New App ID
           </Button>
         </div>
       </div>
 
-      {/* List */}
+      {/* ── Search + Filter bar ── */}
+      <div className="flex flex-col sm:flex-row gap-2">
+        {/* Search */}
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+          <Input
+            type="search"
+            placeholder="Search by App ID, name or PIN…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-8 pr-8 h-8 text-xs font-mono bg-muted/40 border-border focus:border-primary/40 placeholder:text-muted-foreground/40"
+          />
+          {search && (
+            <button onClick={() => setSearch("")}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Filter tabs */}
+        <div className="flex gap-1 bg-muted/40 border border-border rounded-md p-0.5 flex-shrink-0">
+          {tabs.map((t) => (
+            <button key={t.key}
+              onClick={() => setFilterTab(t.key)}
+              className={cn(
+                "px-2.5 py-1 rounded text-[10px] font-mono font-medium transition-all flex items-center gap-1",
+                filterTab === t.key
+                  ? "bg-primary/15 border border-primary/25 text-primary shadow-[0_0_8px_rgba(0,212,255,0.1)]"
+                  : "text-muted-foreground hover:text-foreground"
+              )}>
+              <span className={filterTab === t.key ? "text-primary" : t.color}>{t.label}</span>
+              <span className={cn("tabular-nums", filterTab === t.key ? "text-primary/70" : "text-muted-foreground/50")}>
+                {t.count}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* ── List ── */}
       {isLoading ? (
-        <div className="flex justify-center py-12">
-          <Loader2 className="w-7 h-7 animate-spin text-primary" />
+        <div className="flex justify-center py-14">
+          <Loader2 className="w-6 h-6 animate-spin text-primary" />
         </div>
       ) : appIds.length === 0 ? (
         <Card className="border-dashed">
           <CardContent className="py-12 text-center">
-            <KeyRound className="w-10 h-10 text-muted-foreground/30 mx-auto mb-3" />
+            <KeyRound className="w-10 h-10 text-muted-foreground/20 mx-auto mb-3" />
             <p className="text-sm font-medium text-muted-foreground">No App IDs yet</p>
-            <p className="text-xs text-muted-foreground mt-1">Click "New App ID" above — it will be auto-generated</p>
             <Button size="sm" className="mt-4" onClick={openCreate}>
               <Plus className="w-4 h-4 mr-1.5" /> Create First App ID
             </Button>
           </CardContent>
         </Card>
+      ) : filtered.length === 0 ? (
+        <div className="py-12 text-center">
+          <Filter className="w-8 h-8 text-muted-foreground/20 mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">No apps match your filter</p>
+          <button onClick={() => { setSearch(""); setFilterTab("all"); }}
+            className="text-xs text-primary/70 hover:text-primary mt-1 transition-colors font-mono">
+            Clear filters
+          </button>
+        </div>
       ) : (
-        <div className="space-y-3">
-          {appIds.map((app) => {
+        <div className="space-y-2.5">
+          {filtered.map((app) => {
             const expired = app.expires_at ? new Date(app.expires_at) < new Date() : false;
-            const isActive = app.status === "active";
+            const isActive = app.status === "active" && !expired;
             return (
-              <Card
-                key={app.app_id}
+              <Card key={app.app_id}
                 className={cn(
-                  "transition-opacity",
+                  "transition-all duration-150 hover:border-primary/20 hover:shadow-[0_0_12px_rgba(0,212,255,0.06)]",
                   !isActive && "opacity-60",
-                  expired && "border-red-200 dark:border-red-900/50"
-                )}
-              >
-                <CardContent className="p-4">
-                  <div className="flex flex-col gap-3">
-                    {/* App ID + status badges */}
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive && !expired ? "bg-green-500" : "bg-red-400"}`} />
-                          <span className="font-mono font-bold text-sm tracking-wide">{app.app_id}</span>
-                          <button onClick={() => copyId(app.app_id)} className="text-muted-foreground hover:text-foreground">
-                            {copiedId === app.app_id ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-                          </button>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                          {app.name && (
-                            <span className="text-[10px] bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{app.name}</span>
-                          )}
-                          <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium capitalize", statusColor[app.status] ?? statusColor.inactive)}>
-                            {app.status}
-                          </span>
-                          <ExpiryBadge expiresAt={app.expires_at} />
-                          <span className="text-[10px] text-muted-foreground">
-                            PIN: <span className="font-mono">{app.pin}</span>
-                          </span>
-                          <span className="text-[10px] text-muted-foreground">
-                            · {app.device_count} devices
-                          </span>
-                        </div>
+                  expired && "border-red-200 dark:border-red-900/40"
+                )}>
+                <CardContent className="p-3 sm:p-4">
+                  {/* Row 1: ID + badges + toggle/delete */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      {/* App ID line */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isActive ? "bg-green-500 shadow-[0_0_6px_rgba(0,255,136,0.6)]" : "bg-red-400/60"}`} />
+                        <span className="font-mono font-bold text-sm tracking-wide text-primary/90">{app.app_id}</span>
+                        <button onClick={() => copyId(app.app_id)}
+                          className="text-muted-foreground hover:text-primary transition-colors ml-0.5">
+                          {copiedId === app.app_id
+                            ? <Check className="w-3 h-3 text-green-400" />
+                            : <Copy className="w-3 h-3" />}
+                        </button>
+                      </div>
+                      {/* Sub-info line */}
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                        {app.name && (
+                          <span className="text-[10px] bg-muted/60 px-1.5 py-0.5 rounded border border-border/50 text-muted-foreground font-mono">{app.name}</span>
+                        )}
+                        <span className={cn("text-[10px] px-1.5 py-0.5 rounded font-medium capitalize border border-transparent", statusColor[app.status] ?? statusColor.inactive)}>
+                          {expired ? "expired" : app.status}
+                        </span>
+                        <ExpiryBadge expiresAt={app.expires_at} />
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          PIN: <span className="text-foreground/60">{app.pin}</span>
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">·</span>
+                        <span className="text-[10px] text-muted-foreground font-mono">{app.device_count} devices</span>
                       </div>
                     </div>
 
-                    {/* Action buttons */}
-                    <div className="flex flex-wrap gap-1.5">
-                      <Link href={`/app/${app.app_id}`}>
-                        <Button size="sm" variant="outline" className="h-7 text-xs">
-                          <ChevronRight className="w-3 h-3 mr-1" /> Devices
-                        </Button>
-                      </Link>
-                      <Button size="sm" variant="outline" className="h-7 text-xs"
-                        onClick={() => setChangePinFor(app.app_id)}>
-                        <KeyRound className="w-3 h-3 mr-1" /> Change PIN
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 text-xs"
-                        onClick={() => resetMut.mutate(app.app_id)}
-                        disabled={resetMut.isPending}>
-                        <RotateCcw className="w-3 h-3 mr-1" /> Reset 1234
-                      </Button>
-                      <Button size="sm" variant="outline" className="h-7 text-xs"
-                        onClick={() => extendMut.mutate(app.app_id)}
-                        disabled={extendMut.isPending}>
-                        <CalendarPlus className="w-3 h-3 mr-1" /> +30 Days
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0"
-                        title={isActive ? "Deactivate" : "Activate"}
-                        onClick={() => toggleMut.mutate({ appId: app.app_id, status: isActive ? "inactive" : "active" })}>
+                    {/* Quick actions: toggle + delete */}
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button title={isActive ? "Deactivate" : "Activate"}
+                        onClick={() => toggleMut.mutate({ appId: app.app_id, status: isActive ? "inactive" : "active" })}
+                        className="w-7 h-7 flex items-center justify-center rounded hover:bg-muted/60 transition-colors">
                         {isActive
-                          ? <ToggleRight className="w-4 h-4 text-green-500" />
+                          ? <ToggleRight className="w-4 h-4 text-green-400" />
                           : <ToggleLeft className="w-4 h-4 text-muted-foreground" />}
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive"
-                        onClick={() => setDeleteFor(app.app_id)}>
+                      </button>
+                      <button title="Delete" onClick={() => setDeleteFor(app.app_id)}
+                        className="w-7 h-7 flex items-center justify-center rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors">
                         <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
+                      </button>
                     </div>
+                  </div>
 
+                  {/* Row 2: Action buttons — scrollable on small screens */}
+                  <div className="flex gap-1.5 mt-2.5 overflow-x-auto pb-0.5 scrollbar-none">
+                    <Link href={`/app/${app.app_id}`}>
+                      <Button size="sm" variant="outline"
+                        className="h-7 text-xs px-2.5 whitespace-nowrap border-border hover:border-primary/30 hover:text-primary flex-shrink-0">
+                        <ChevronRight className="w-3 h-3 mr-1" /> Devices
+                      </Button>
+                    </Link>
+                    <Button size="sm" variant="outline"
+                      className="h-7 text-xs px-2.5 whitespace-nowrap border-border hover:border-primary/30 hover:text-primary flex-shrink-0"
+                      onClick={() => setChangePinFor(app.app_id)}>
+                      <KeyRound className="w-3 h-3 mr-1" /> Change PIN
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      className="h-7 text-xs px-2.5 whitespace-nowrap border-border hover:border-primary/30 hover:text-primary flex-shrink-0"
+                      onClick={() => resetMut.mutate(app.app_id)}
+                      disabled={resetMut.isPending}>
+                      <RotateCcw className="w-3 h-3 mr-1" /> Reset 1234
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      className="h-7 text-xs px-2.5 whitespace-nowrap border-border hover:border-primary/30 hover:text-primary flex-shrink-0"
+                      onClick={() => extendMut.mutate(app.app_id)}
+                      disabled={extendMut.isPending}>
+                      <CalendarPlus className="w-3 h-3 mr-1" /> +30 Days
+                    </Button>
+                    <Button size="sm" variant="outline"
+                      className="h-7 text-xs px-2.5 whitespace-nowrap border-border border-orange-500/20 text-orange-400/70 hover:border-orange-500/50 hover:text-orange-400 hover:bg-orange-500/8 flex-shrink-0"
+                      onClick={() => logoutAllMut.mutate(app.app_id)}
+                      disabled={logoutAllMut.isPending}>
+                      <LogOut className="w-3 h-3 mr-1" /> Logout All
+                    </Button>
                   </div>
                 </CardContent>
               </Card>
             );
           })}
+
+          {/* Result count */}
+          {(search || filterTab !== "all") && (
+            <p className="text-center text-[10px] text-muted-foreground/40 font-mono pt-1">
+              {filtered.length} of {appIds.length} apps
+            </p>
+          )}
         </div>
       )}
 
-      {/* ── Create App ID Dialog ─────────────────────────────────────────────── */}
-      <Dialog open={showCreate} onOpenChange={(o) => { if (!o) { setShowCreate(false); } }}>
+      {/* ── Create Dialog ── */}
+      <Dialog open={showCreate} onOpenChange={(o) => { if (!o) setShowCreate(false); }}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -434,22 +493,19 @@ export default function AppIds() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            {/* Generated ID */}
             <div className="space-y-1.5">
               <label className="text-sm font-medium">Auto-Generated App ID</label>
               <div className="flex gap-2">
                 <div className="flex-1 bg-muted rounded-md px-3 py-2.5 font-mono text-sm font-bold tracking-wider min-h-[38px] flex items-center">
                   {generateMut.isPending
                     ? <span className="text-muted-foreground text-xs flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> Generating...</span>
-                    : generatedId || <span className="text-muted-foreground text-xs">Click refresh...</span>}
+                    : generatedId || <span className="text-muted-foreground text-xs">Click refresh…</span>}
                 </div>
                 <Button type="button" size="sm" variant="outline" onClick={() => generateMut.mutate()} disabled={generateMut.isPending}>
                   <RefreshCw className={cn("w-4 h-4", generateMut.isPending && "animate-spin")} />
                 </Button>
               </div>
             </div>
-
-            {/* Info boxes */}
             <div className="grid grid-cols-2 gap-2">
               <div className="p-3 rounded-md bg-primary/5 border border-primary/20">
                 <p className="text-xs font-semibold text-primary flex items-center gap-1">
@@ -462,48 +518,34 @@ export default function AppIds() {
                 </p>
               </div>
             </div>
-
-            {/* Optional name/label */}
             <div className="space-y-1.5">
               <label className="text-sm font-medium">App Name <span className="text-muted-foreground font-normal">(optional)</span></label>
-              <Input
-                placeholder="e.g. Mumbai RTO, Delhi Branch"
-                value={appName}
-                onChange={(e) => setAppName(e.target.value)}
-              />
+              <Input placeholder="e.g. Mumbai RTO, Delhi Branch" value={appName} onChange={(e) => setAppName(e.target.value)} />
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCreate(false)}>Cancel</Button>
-            <Button
-              onClick={() => createMut.mutate()}
-              disabled={!generatedId || createMut.isPending}
-            >
+            <Button onClick={() => createMut.mutate()} disabled={!generatedId || createMut.isPending}>
               {createMut.isPending ? <><Loader2 className="w-4 h-4 animate-spin mr-1.5" /> Creating...</> : "Create App ID"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* ── One-time setup modal ───────────────────────────────────────────── */}
       <SetupModal open={showSetup} onClose={() => { setShowSetup(false); setPendingCreate(false); }} onDone={onSetupDone} />
-
-      {/* ── Change PIN dialog ──────────────────────────────────────────────── */}
       {changePinFor && <ChangePinDialog appId={changePinFor} onClose={() => setChangePinFor(null)} />}
 
-      {/* ── Delete confirm ─────────────────────────────────────────────────── */}
       <AlertDialog open={!!deleteFor} onOpenChange={(o) => !o && setDeleteFor(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete "{deleteFor}"?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this App ID and <strong>all associated devices</strong>. This cannot be undone.
+              This will permanently delete this App ID and <strong>all associated devices</strong>. Cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               onClick={() => deleteFor && deleteMut.mutate(deleteFor)}>
               Yes, Delete
             </AlertDialogAction>
