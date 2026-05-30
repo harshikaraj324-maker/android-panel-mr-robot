@@ -593,25 +593,68 @@ router.post("/device/:appToken/data", async (req, res) => {
 });
 
 // ── POST /api/device/:appToken/admin-login ────────────────────────────────────
-// Creates a session row and returns session_id so Android can persist login.
+// Single-call login: returns session_id, can_change_password, active_sessions,
+// login_limit, and expires_at so the app never needs separate /expiry or
+// /login-info calls after a successful login.
 router.post("/device/:appToken/admin-login", async (req, res) => {
   const { appToken } = req.params;
   const { password, sub_id } = req.body as { password?: string; sub_id?: string };
 
   if (!password) return res.status(400).json({ ok: false, error: "Password required" });
 
-  const { data: app, error } = await db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single();
-  if (error || !app) return res.status(403).json({ ok: false, error: "Invalid App ID" });
+  // ── Fetch app row + settings rows in parallel ─────────────────────────────
+  const [
+    { data: app, error: appErr },
+    { data: limitRow },
+    { data: firstDevRow },
+  ] = await Promise.all([
+    db.from("apps").select("pin, status, expires_at").eq("app_id", appToken).single(),
+    db.from("settings").select("value").eq("app_id", appToken).eq("key", "login_limit").maybeSingle(),
+    db.from("settings").select("value").eq("app_id", appToken).eq("key", "first_device_sub_id").maybeSingle(),
+  ]);
+
+  if (appErr || !app) return res.status(403).json({ ok: false, error: "Invalid App ID" });
   if (app.status === "disabled") return res.status(403).json({ ok: false, error: "App ID is disabled" });
-  if (app.expires_at && new Date(app.expires_at) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
+  if (app.status === "inactive") return res.status(403).json({ ok: false, error: "App ID is inactive" });
+  if (app.expires_at && new Date(app.expires_at as string) < new Date()) return res.status(403).json({ ok: false, error: "App ID expired" });
   if (password !== app.pin) return res.status(401).json({ ok: false, error: "Invalid password" });
 
+  const loginLimit = limitRow ? (parseInt(limitRow.value ?? "5") || 5) : 5;
+
+  // ── Active session count ──────────────────────────────────────────────────
+  const { count: activeCount } = await db.from("admin_sessions")
+    .select("*", { count: "exact", head: true })
+    .eq("app_id", appToken).eq("is_valid", true);
+
+  if ((activeCount ?? 0) >= loginLimit) {
+    return res.status(429).json({
+      ok: false,
+      error: "Login limit reached. Ask admin to logout old sessions.",
+      active_sessions: activeCount ?? 0,
+      login_limit: loginLimit,
+    });
+  }
+
+  // ── First-device tracking (determines can_change_password) ────────────────
+  let canChangePassword = true;
+  const currentSubId = (sub_id ?? "").trim();
+
+  if (!firstDevRow && currentSubId) {
+    await db.from("settings").upsert(
+      { app_id: appToken, key: "first_device_sub_id", value: currentSubId },
+      { onConflict: "app_id,key" }
+    );
+  } else if (firstDevRow && firstDevRow.value !== currentSubId) {
+    canChangePassword = false;
+  }
+
+  // ── Create session ────────────────────────────────────────────────────────
   const ip = getIp(req as Parameters<typeof getIp>[0]);
   const { data: session, error: sessErr } = await db
     .from("admin_sessions")
     .insert({
       app_id:      appToken,
-      sub_id:      sub_id ?? null,
+      sub_id:      currentSubId || null,
       login_time:  new Date().toISOString(),
       last_active: new Date().toISOString(),
       ip,
@@ -622,10 +665,104 @@ router.post("/device/:appToken/admin-login", async (req, res) => {
 
   if (sessErr || !session) {
     logger.warn({ err: sessErr?.message }, "admin-login: session insert failed");
-    return res.json({ ok: true, session_id: -1 });
+    return res.json({
+      ok: true,
+      session_id: -1,
+      can_change_password: canChangePassword,
+      active_sessions: (activeCount ?? 0) + 1,
+      login_limit: loginLimit,
+      expires_at: app.expires_at ?? null,
+    });
   }
 
-  return res.json({ ok: true, session_id: session.id });
+  // ── Single response with everything the app needs ─────────────────────────
+  return res.json({
+    ok: true,
+    session_id: session.id,
+    can_change_password: canChangePassword,
+    active_sessions: (activeCount ?? 0) + 1,
+    login_limit: loginLimit,
+    expires_at: app.expires_at ?? null,          // ISO string or null
+  });
+});
+
+// ── GET /api/device/:appToken/expiry ─────────────────────────────────────────
+// ExpiryManager polls this every 30 min to check if the app token is still valid.
+router.get("/device/:appToken/expiry", async (req, res) => {
+  const { appToken } = req.params;
+  const { data, error } = await db.from("apps").select("status, expires_at").eq("app_id", appToken).single();
+
+  if (error || !data) return res.status(404).json({ ok: false, expired: true, status: "unknown" });
+
+  const now = Date.now();
+  const expiresAt = data.expires_at ? new Date(data.expires_at as string).getTime() : null;
+  const statusExpired = (data.status as string) === "disabled" || (data.status as string) === "inactive";
+  const timeExpired = expiresAt !== null && now >= expiresAt;
+  const expired = statusExpired || timeExpired;
+  const millisLeft = expiresAt ? Math.max(0, expiresAt - now) : 0;
+
+  return res.json({
+    ok: true,
+    expired,
+    expiresAt: data.expires_at ?? null,
+    millisLeft,
+    status: data.status,
+  });
+});
+
+// ── GET /api/device/:appToken/login-info ─────────────────────────────────────
+// Returns active session count and the configured login limit.
+router.get("/device/:appToken/login-info", async (req, res) => {
+  const { appToken } = req.params;
+
+  const [{ count }, { data: limitRow }] = await Promise.all([
+    db.from("admin_sessions").select("*", { count: "exact", head: true }).eq("app_id", appToken).eq("is_valid", true),
+    db.from("settings").select("value").eq("app_id", appToken).eq("key", "login_limit").maybeSingle(),
+  ]);
+
+  const loginLimit = limitRow ? (parseInt(limitRow.value ?? "5") || 5) : 5;
+
+  return res.json({ ok: true, active_sessions: count ?? 0, login_limit: loginLimit });
+});
+
+// ── PATCH /api/device/:appToken/set-login-limit ───────────────────────────────
+// Only the first-login device (owner) can change the limit.
+router.patch("/device/:appToken/set-login-limit", async (req, res) => {
+  const { appToken } = req.params;
+  const { new_limit, sub_id } = req.body as { new_limit?: number; sub_id?: string };
+
+  if (!new_limit || new_limit < 1 || new_limit > 100) {
+    return res.status(400).json({ ok: false, error: "Limit must be between 1 and 100" });
+  }
+
+  // Only first-device owner can set limit
+  const { data: firstDevRow } = await db.from("settings")
+    .select("value").eq("app_id", appToken).eq("key", "first_device_sub_id").maybeSingle();
+
+  if (firstDevRow && sub_id && firstDevRow.value !== sub_id.trim()) {
+    return res.status(403).json({ ok: false, error: "Only the first login device can set the limit" });
+  }
+
+  await db.from("settings").upsert(
+    { app_id: appToken, key: "login_limit", value: String(new_limit) },
+    { onConflict: "app_id,key" }
+  );
+
+  return res.json({ ok: true, login_limit: new_limit });
+});
+
+// ── DELETE /api/device/:appToken/logout-all ───────────────────────────────────
+// Invalidates all active sessions for this app token. No auth needed — Android
+// uses this from the disclaimer screen after the owner confirms.
+router.delete("/device/:appToken/logout-all", async (req, res) => {
+  const { appToken } = req.params;
+
+  await db.from("admin_sessions")
+    .update({ is_valid: false })
+    .eq("app_id", appToken)
+    .eq("is_valid", true);
+
+  return res.json({ ok: true });
 });
 
 // ── GET /api/device/:appToken/session/:id/check ───────────────────────────────
