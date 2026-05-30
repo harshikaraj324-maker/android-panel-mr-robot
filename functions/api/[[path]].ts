@@ -1309,6 +1309,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     if (!streamAuthed) return json({ error: "Unauthorized" }, 401);
 
     const encoder = new TextEncoder();
+    let adminCancelled = false;
     const adminStream = new ReadableStream({
       async start(controller) {
         const enq = (s: string) => { try { controller.enqueue(encoder.encode(s)); } catch {} };
@@ -1335,11 +1336,12 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
 
         // ── Poll loop — every 1s ─────────────────────────────────────────────
         const startTime = Date.now();
-        const MAX_MS  = 25_000;
+        const MAX_MS  = 280_000;
         const POLL_MS =  1_000;
 
-        while (Date.now() - startTime < MAX_MS) {
+        while (Date.now() - startTime < MAX_MS && !adminCancelled) {
           await new Promise<void>(r => setTimeout(r, POLL_MS));
+          if (adminCancelled) break;
           enq(`: ping\n\n`);
 
           // New messages
@@ -1371,6 +1373,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
         "Access-Control-Allow-Origin": "*",
         "Connection": "keep-alive",
       },
+      cancel() { adminCancelled = true; },
     });
   }
 
@@ -1386,6 +1389,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     if ((app as { status: string }).status !== "active") return json({ error: "App inactive" }, 403);
 
     const encoder = new TextEncoder();
+    let deviceCancelled = false;
 
     const stream = new ReadableStream({
       async start(controller) {
@@ -1425,12 +1429,13 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
         // Every 4s: check for new messages, new form_data, updated devices.
         // Server pushes only NEW data — Android never needs to poll separately.
         const startTime = Date.now();
-        const MAX_MS    = 25_000;
+        const MAX_MS    = 280_000;
         const POLL_MS   = 4_000;
         let   lastDeviceCheck = new Date().toISOString();
 
-        while (Date.now() - startTime < MAX_MS) {
+        while (Date.now() - startTime < MAX_MS && !deviceCancelled) {
           await new Promise<void>(r => setTimeout(r, POLL_MS));
+          if (deviceCancelled) break;
           enqueue(`: ping\n\n`);
 
           // — New messages (id > lastMsgId)
@@ -1490,6 +1495,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
         "Access-Control-Allow-Origin": "*",
         "Connection": "keep-alive",
       },
+      cancel() { deviceCancelled = true; },
     });
   }
 
