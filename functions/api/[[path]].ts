@@ -464,7 +464,8 @@ async function runSetup(env: Env, pat?: string): Promise<{ ok: boolean; error?: 
 // ── App ID generator ──────────────────────────────────────────────────────────
 const WORDS = ["MR","ROBOT","ALPHA","BETA","GAMMA","DELTA","ECHO","GHOST","HAWK","IRON","JADE","KING","LION","NOVA","ONYX","PRIME","RAVEN","SIGMA","TITAN","VIPER","WOLF","ZERO","BLAZE","CYBER","EAGLE","FLASH","NINJA","ORBIT","SPARK","STORM"];
 function rndChars(n: number) { const c="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; return Array.from({length:n},()=>c[Math.floor(Math.random()*c.length)]).join(""); }
-function generateAppId() { return `${WORDS[Math.floor(Math.random()*WORDS.length)]}-${WORDS[Math.floor(Math.random()*WORDS.length)]}-${rndChars(4)}@${rndChars(3)}`; }
+// All App IDs start with MR-ROBOT — only the suffix changes
+function generateAppId() { return `MR-ROBOT-${rndChars(4)}@${rndChars(3)}`; }
 
 // ── Routing ───────────────────────────────────────────────────────────────────
 function matchPath(pattern: string, path: string): Record<string, string> | null {
@@ -679,7 +680,19 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     const { status } = await bodyJson() as { status: string };
     const { error } = await d.from("apps").update({ status }).eq("app_id", m.appId);
     const errR = dbErrResp(error); if (errR) return errR;
+    // When deactivating — immediately invalidate ALL sessions so existing logins are kicked out
+    if (status === "inactive" || status === "disabled") {
+      await d.from("admin_sessions").update({ is_valid: false }).eq("app_id", m.appId);
+    }
     return json({ ok: true });
+  }
+
+  // ── Logout all sessions for an App ID (admin-initiated) ─────────────────────
+  if (method === "POST" && (m = matchPath("/admin/app-ids/:appId/logout-all", path))) {
+    const auth = requireAuth(); if (auth) return auth;
+    const { data: rows } = await d.from("admin_sessions").select("id").eq("app_id", m.appId).eq("is_valid", true);
+    await d.from("admin_sessions").update({ is_valid: false }).eq("app_id", m.appId).eq("is_valid", true);
+    return json({ ok: true, count: (rows as unknown[] ?? []).length });
   }
 
   if (method === "DELETE" && (m = matchPath("/admin/app-ids/:appId", path))) {
