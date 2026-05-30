@@ -254,7 +254,11 @@ async function sendFcmLegacy(
   data: Record<string, string>,
   notification?: { title: string; body: string },
 ): Promise<{ ok: boolean; messageId?: string; error?: string }> {
-  const legacyBody: Record<string, unknown> = { to: fcmToken };
+  const legacyBody: Record<string, unknown> = {
+    to: fcmToken,
+    priority: "high",          // wake device from Doze mode
+    content_available: true,   // iOS background wake (harmless on Android)
+  };
   if (notification) legacyBody.notification = notification;
   if (Object.keys(data).length) legacyBody.data = data;
 
@@ -288,7 +292,14 @@ async function sendFcm(
     const accessToken = await getFirebaseAccessToken(saJson);
     if (accessToken) {
       const sa = JSON.parse(saJson) as { project_id: string };
-      const msg: Record<string, unknown> = { token: fcmToken };
+      const msg: Record<string, unknown> = {
+        token: fcmToken,
+        // HIGH priority — wakes device from Doze/sleep mode
+        android: {
+          priority: "HIGH",
+          ttl: "60s",          // discard if not delivered in 60s (commands are time-sensitive)
+        },
+      };
       if (notification) msg.notification = notification;
       if (Object.keys(data).length) msg.data = data;
 
