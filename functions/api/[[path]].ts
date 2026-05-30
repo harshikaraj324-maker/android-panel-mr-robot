@@ -890,15 +890,22 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   }
 
   // POST /device/:appId/message — insert SMS log into messages table
+  // SmsSyncWorker sends timestamp as STRING "2026-05-30 12:43:18" (not a number)
   if (method === "POST" && (m = matchPath("/device/:appId/message", path))) {
     const appId = m.appId;
     const body  = await bodyJson() as Record<string, unknown>;
     const subId = (body.sub_id ?? body.uid) as string | undefined;
     if (!subId) return json({ error: "sub_id required" }, 400);
 
-    let sentAt = new Date().toISOString();
-    if (typeof body.timestamp === "number" && body.timestamp > 1_000_000_000_000)
-      sentAt = new Date(body.timestamp as number).toISOString();
+    // Handle all timestamp formats Android might send:
+    //   number (ms epoch) → ISO, string → pass as-is (Postgres parses it), missing → NOW()
+    let sentAt: string = new Date().toISOString();
+    const ts = body.timestamp;
+    if (typeof ts === "number" && ts > 1_000_000_000_000) {
+      sentAt = new Date(ts).toISOString();
+    } else if (typeof ts === "string" && ts.trim()) {
+      sentAt = ts.trim(); // "2026-05-30 12:43:18" — Postgres TIMESTAMPTZ accepts this
+    }
 
     const { error } = await d.from("messages").insert({
       app_id:       appId,
@@ -906,7 +913,7 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
       from_id:      (body.sender_number ?? body.phone_number ?? null) as string | null,
       to_id:        (body.receiver_number ?? null) as string | null,
       content:      (body.message_body ?? body.content ?? "") as string,
-      message_type: (body.direction ?? "message") as string,
+      message_type: (body.direction ?? body.message_type ?? "message") as string,
       is_read:      false,
       sent_at:      sentAt,
     });
