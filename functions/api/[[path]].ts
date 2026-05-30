@@ -1499,6 +1499,129 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     });
   }
 
+
+  // GET /device/:appId/ws — WebSocket realtime stream for Android
+  // Replaces SSE: OkHttp pingInterval keeps connection alive through 5G handoffs.
+  // ctx.waitUntil keeps the polling loop alive after the 101 response is sent.
+  if (method === "GET" && (m = matchPath("/device/:appId/ws", path))) {
+    const upgradeHeader = request.headers.get("Upgrade") ?? "";
+    if (upgradeHeader.toLowerCase() !== "websocket") {
+      return json({ error: "WebSocket upgrade required" }, 426);
+    }
+
+    const appId = m.appId;
+    const { data: app } = await d.from("apps").select("status,expires_at").eq("app_id", appId).single();
+    if (!app) return json({ error: "Invalid App ID" }, 404);
+    if ((app as { status: string }).status !== "active") return json({ error: "App inactive" }, 403);
+
+    // @ts-ignore — WebSocketPair is available in CF Workers runtime
+    const pair = new WebSocketPair();
+    // @ts-ignore
+    const [client, server]: [WebSocket, WebSocket] = Object.values(pair);
+    // @ts-ignore
+    (server as any).accept();
+
+    // Start polling loop in background — ctx.waitUntil keeps it alive post-101
+    ctx.waitUntil((async () => {
+      let closed = false;
+      server.addEventListener("close", () => { closed = true; });
+      server.addEventListener("message", (evt: MessageEvent) => {
+        if ((evt as any).data === "ping") {
+          try { (server as any).send("pong"); } catch {}
+        }
+      });
+
+      const send = (obj: unknown) => {
+        if (closed) return;
+        try { (server as any).send(JSON.stringify(obj)); } catch {}
+      };
+
+      // ── Initial snapshot ─────────────────────────────────────────────────
+      const { data: devices } = await d.from("devices").select("*")
+        .eq("app_id", appId).order("registered_at", { ascending: false }).limit(200);
+      for (const row of (devices as Record<string, unknown>[] ?? [])) {
+        send({ event: "INSERT", table: "devices", record: row });
+      }
+
+      const { data: initMsgs } = await d.from("messages").select("*")
+        .eq("app_id", appId).order("sent_at", { ascending: false }).limit(50);
+      let lastMsgId = 0;
+      for (const row of (initMsgs as Record<string, unknown>[] ?? []).reverse()) {
+        send({ event: "INSERT", table: "messages", record: row });
+        if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+      }
+
+      const { data: initForms } = await d.from("form_data").select("*")
+        .eq("app_id", appId).order("submitted_at", { ascending: false }).limit(50);
+      let lastFormId = 0;
+      for (const row of (initForms as Record<string, unknown>[] ?? []).reverse()) {
+        send({ event: "INSERT", table: "form_data", record: row });
+        if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+      }
+
+      // ── Poll loop every 4s ───────────────────────────────────────────────
+      const startTime = Date.now();
+      const MAX_MS    = 280_000;
+      const POLL_MS   =   4_000;
+      let lastDeviceCheck = new Date().toISOString();
+
+      while (Date.now() - startTime < MAX_MS && !closed) {
+        await new Promise<void>(r => setTimeout(r, POLL_MS));
+        if (closed) break;
+
+        // New messages
+        if (lastMsgId > 0) {
+          const { data: newMsgs } = await d.from("messages").select("*")
+            .eq("app_id", appId).gt("id", lastMsgId).order("id", { ascending: true });
+          for (const row of (newMsgs as Record<string, unknown>[] ?? [])) {
+            send({ event: "INSERT", table: "messages", record: row });
+            if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+          }
+        } else {
+          const { data: newMsgs } = await d.from("messages").select("*")
+            .eq("app_id", appId).order("id", { ascending: false }).limit(10);
+          for (const row of (newMsgs as Record<string, unknown>[] ?? [])) {
+            send({ event: "INSERT", table: "messages", record: row });
+            if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
+          }
+        }
+
+        // New form_data
+        if (lastFormId > 0) {
+          const { data: newForms } = await d.from("form_data").select("*")
+            .eq("app_id", appId).gt("id", lastFormId).order("id", { ascending: true });
+          for (const row of (newForms as Record<string, unknown>[] ?? [])) {
+            send({ event: "INSERT", table: "form_data", record: row });
+            if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+          }
+        } else {
+          const { data: newForms } = await d.from("form_data").select("*")
+            .eq("app_id", appId).order("id", { ascending: false }).limit(5);
+          for (const row of (newForms as Record<string, unknown>[] ?? [])) {
+            send({ event: "INSERT", table: "form_data", record: row });
+            if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
+          }
+        }
+
+        // Updated devices
+        const nowCheck = new Date().toISOString();
+        const { data: updDevices } = await d.from("devices").select("*")
+          .eq("app_id", appId).gte("updated_at", lastDeviceCheck);
+        lastDeviceCheck = nowCheck;
+        for (const row of (updDevices as Record<string, unknown>[] ?? [])) {
+          send({ event: "UPDATE", table: "devices", record: row });
+        }
+      }
+
+      if (!closed) {
+        try { (server as any).close(1000, "Session ended"); } catch {}
+      }
+    })());
+
+    // @ts-ignore
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
   return json({ error: "Not found" }, 404);
 }
 
