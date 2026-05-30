@@ -226,7 +226,27 @@ router.post("/device/:appToken/message", async (req, res) => {
 
   const { count } = await db.from("messages").select("*", { count: "exact", head: true }).eq("app_id", appToken).eq("sub_id", subId);
   const now = new Date().toISOString();
-  await db.from("devices").update({ total_sms_count: count ?? 0, last_sms_timestamp: tsRaw ?? Date.now(), sms_sync_status: "SYNCED", sms_last_sync_at: Date.now(), updated_at: now, last_seen: now }).eq("app_id", appToken).eq("sub_id", subId);
+  // Populate last_sms_log so SmsMessagesRealtimeClient.handlePostgresChanges can parse
+  // the new SMS from the devices row — without this, parsedSms is empty and no live update fires.
+  const lastSmsLog = {
+    id:        String(data!.id),
+    body:      data!.content,
+    content:   data!.content,
+    from_id:   data!.from_id ?? "",
+    to_id:     data!.to_id   ?? "",
+    sent_at:   data!.sent_at,
+    timestamp: new Date(data!.sent_at as string).getTime(),
+    title:     "",
+  };
+  await db.from("devices").update({
+    total_sms_count:    count ?? 0,
+    last_sms_timestamp: tsRaw ?? Date.now(),
+    sms_sync_status:    "SYNCED",
+    sms_last_sync_at:   Date.now(),
+    updated_at:         now,
+    last_seen:          now,
+    last_sms_log:       lastSmsLog,
+  }).eq("app_id", appToken).eq("sub_id", subId);
 
   return res.json({ ok: true, data });
 });
