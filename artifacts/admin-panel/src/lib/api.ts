@@ -146,6 +146,12 @@ export const api = {
   getDbStatus: () => req<{ tables_ready: boolean; error: string | null; setup_sql: string | null }>("/admin/db-status"),
   runSetup: () => req<{ ok: boolean; error?: string; setup_sql?: string }>("/admin/run-setup", { method: "POST" }),
 
+  // DB setup — PAT-based (used by banner and DbSetup page)
+  setup: (pat: string) => req<{ ok: boolean; message: string }>("/admin/setup", {
+    method: "POST",
+    body: JSON.stringify({ pat }),
+  }),
+
   // DB setup — DbSetup page (PAT-based)
   initStatus: () => req<{ tables_ready: boolean; error: string | null; setup_sql: string | null }>("/admin/db-status")
     .then((d) => ({ tables_exist: d.tables_ready })),
