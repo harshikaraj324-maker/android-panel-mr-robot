@@ -1,4 +1,7 @@
-const BASE = "/api";
+// Use absolute backend URL when running on a different domain (e.g. Cloudflare Pages)
+// VITE_API_BASE_URL is baked in at build time from REPLIT_DOMAINS (or set manually)
+const _apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+const BASE = `${_apiBase}/api`;
 
 // Token management
 export function getToken(): string | null { return localStorage.getItem("admin_token"); }
@@ -141,6 +144,9 @@ export const api = {
   },
   markRead:      (id: number) => req<{ ok: boolean }>(`/admin/messages/${id}/read`, { method: "PATCH" }),
   deleteMessage: (id: number) => req<{ ok: boolean }>(`/admin/messages/${id}`, { method: "DELETE" }),
+
+  // Bootstrap — auto-setup: returns tables status + saved PAT for browser-side setup
+  bootstrap: () => req<{ tables_ready: boolean; setup_sql: string | null; pat: string | null }>("/admin/bootstrap"),
 
   // DB setup — banner (auto)
   getDbStatus: () => req<{ tables_ready: boolean; error: string | null; setup_sql: string | null }>("/admin/db-status"),
