@@ -158,45 +158,25 @@ router.get("/admin/init-status", requireAuth, async (_req, res) => {
   res.json({ tables_exist: !error });
 });
 
-// Setup tables via Supabase Management API (accepts PAT from DbSetup page)
+// Setup tables via Supabase Management API (accepts PAT from DbSetup page or banner)
 router.post("/admin/setup", requireAuth, async (req, res) => {
   const { pat } = req.body as { pat?: string };
   if (!pat?.trim()) return res.status(400).json({ ok: false, message: "Supabase Access Token (pat) required" });
 
-  const { SETUP_SQL: sql } = await import("../lib/supabase.js");
-  // Extract project ref from Supabase URL
-  const supabaseUrl = process.env["SUPABASE_URL"] ?? "https://dvgcrxrnnezbdjpujjjt.supabase.co";
-  const projectRef = supabaseUrl.replace("https://", "").split(".")[0];
+  const { runSetupSql, savePat } = await import("../lib/supabase.js");
+  const result = await runSetupSql(pat.trim());
 
-  let setupOk = false;
-
-  // Try Supabase Management API with the provided PAT
-  try {
-    const apiRes = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/database/query`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${pat}`,
-      },
-      body: JSON.stringify({ query: sql }),
-    });
-    if (apiRes.ok) {
-      setupOk = true;
-    } else {
-      const errText = await apiRes.text();
-      console.warn("[setup] Management API error:", apiRes.status, errText);
-    }
-  } catch (err) {
-    console.warn("[setup] Management API fetch error:", err instanceof Error ? err.message : err);
-  }
-
-  if (!setupOk) {
+  if (!result.ok) {
     return res.json({ ok: false, message: "Setup failed. Make sure you pasted a valid Supabase Access Token from supabase.com/dashboard/account/tokens" });
   }
 
   // Verify tables now exist
   const { error: checkErr } = await db.from("apps").select("id").limit(1);
   if (checkErr) return res.json({ ok: false, message: "SQL ran but tables still not found. Wait a moment and refresh." });
+
+  // Save PAT for future auto-restarts — server will auto-create tables on boot from now on
+  savePat(pat.trim());
+
   res.json({ ok: true, message: "All tables created successfully!" });
 });
 
