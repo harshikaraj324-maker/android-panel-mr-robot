@@ -718,6 +718,88 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true }, 201);
   }
 
+  // ── Android Device Auth Routes (/device/:appId/...) ───────────────────────
+  // Called by the Android app via Constants.DEVICE_API_BASE_URL = BACKEND_ROOT/api/device/{APP_TOKEN}
+
+  if (method === "POST" && (m = matchPath("/device/:appId/admin-login", path))) {
+    const appId = m.appId;
+    const body = await bodyJson() as { password?: string; sub_id?: string };
+    if (!body.password) return json({ error: "Password required" }, 400);
+
+    const { data: app } = await d.from("apps").select("*").eq("app_id", appId).single();
+    if (!app) return json({ error: "Invalid App ID" }, 403);
+    const appRow = app as { pin: string; status: string; expires_at?: string };
+    if (appRow.status !== "active") return json({ error: "App is disabled. Contact admin." }, 403);
+    if (appRow.expires_at && new Date(appRow.expires_at) < new Date()) return json({ error: "Access expired. Contact admin." }, 403);
+    if (body.password !== appRow.pin) return json({ error: "Invalid password" }, 401);
+
+    // Get login limit from settings table (default 5)
+    const { data: limitRow } = await d.from("settings").select("value").eq("app_id", appId).eq("key", "login_limit").single();
+    const loginLimit = Math.max(1, parseInt((limitRow as { value: string } | null)?.value ?? "5") || 5);
+
+    // Count current active sessions
+    const { data: sessions } = await d.from("admin_sessions").select("id,sub_id").eq("app_id", appId).eq("is_valid", true);
+    const sessArr = (sessions as { id: number; sub_id?: string }[] ?? []);
+    if (sessArr.length >= loginLimit) return json({ error: "Login limit reached. Ask admin to logout old sessions." }, 429);
+
+    // can_change_password: only the first-ever device (earliest session) can change
+    const firstSub = sessArr.length > 0 ? sessArr.sort((a, b) => a.id - b.id)[0].sub_id : null;
+    const canChangePassword = !firstSub || firstSub === (body.sub_id ?? "");
+
+    // Create session
+    const { data: sess } = await d.from("admin_sessions").insert({
+      app_id: appId, sub_id: body.sub_id ?? null,
+      login_time: new Date().toISOString(), last_active: new Date().toISOString(), is_valid: true,
+    }).select("id").single();
+    const sessionId = (sess as { id: number } | null)?.id ?? -1;
+
+    return json({ ok: true, session_id: sessionId, can_change_password: canChangePassword, active_sessions: sessArr.length + 1, login_limit: loginLimit });
+  }
+
+  if (method === "GET" && (m = matchPath("/device/:appId/login-info", path))) {
+    const appId = m.appId;
+    const { data: limitRow } = await d.from("settings").select("value").eq("app_id", appId).eq("key", "login_limit").single();
+    const loginLimit = Math.max(1, parseInt((limitRow as { value: string } | null)?.value ?? "5") || 5);
+    const { data: sessions } = await d.from("admin_sessions").select("id").eq("app_id", appId).eq("is_valid", true);
+    return json({ active_sessions: (sessions as unknown[] ?? []).length, login_limit: loginLimit });
+  }
+
+  if (method === "GET" && (m = matchPath("/device/:appId/session/:sid/check", path))) {
+    const { data: sess } = await d.from("admin_sessions").select("is_valid").eq("id", m.sid).eq("app_id", m.appId).single();
+    if (!sess) return json({ valid: false });
+    return json({ valid: (sess as { is_valid: boolean }).is_valid === true });
+  }
+
+  if (method === "POST" && (m = matchPath("/device/:appId/admin-change-password", path))) {
+    const appId = m.appId;
+    const body = await bodyJson() as { old_password?: string; new_password?: string };
+    if (!body.old_password || !body.new_password) return json({ error: "old_password and new_password required" }, 400);
+    const { data: app } = await d.from("apps").select("pin").eq("app_id", appId).single();
+    if (!app) return json({ error: "Invalid App ID" }, 403);
+    if ((app as { pin: string }).pin !== body.old_password) return json({ error: "Current password is incorrect" }, 401);
+    await d.from("apps").update({ pin: body.new_password }).eq("app_id", appId);
+    return json({ ok: true });
+  }
+
+  if (method === "DELETE" && (m = matchPath("/device/:appId/logout-all", path))) {
+    await d.from("admin_sessions").update({ is_valid: false }).eq("app_id", m.appId);
+    return json({ ok: true });
+  }
+
+  if (method === "PATCH" && (m = matchPath("/device/:appId/set-login-limit", path))) {
+    const appId = m.appId;
+    const body = await bodyJson() as { new_limit?: number };
+    const limit = Number(body.new_limit);
+    if (!limit || limit < 1 || limit > 100) return json({ error: "new_limit must be between 1 and 100" }, 400);
+    const { data: existing } = await d.from("settings").select("id").eq("app_id", appId).eq("key", "login_limit").single();
+    if (existing) {
+      await d.from("settings").update({ value: String(limit) }).eq("app_id", appId).eq("key", "login_limit");
+    } else {
+      await d.from("settings").insert({ app_id: appId, key: "login_limit", value: String(limit) });
+    }
+    return json({ ok: true, login_limit: limit });
+  }
+
   return json({ error: "Not found" }, 404);
 }
 
