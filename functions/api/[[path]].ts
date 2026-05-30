@@ -862,9 +862,22 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   }
 
   if (method === "POST" && path === "/submit-form") {
-    const body = await bodyJson() as { app_id?: string; sub_id?: string; form_type?: string; data?: Record<string, unknown> };
+    const auth = requireAuth(); if (auth) return auth;
+    const body = await bodyJson() as Record<string, unknown>;
     if (!body.app_id) return json({ error: "app_id required" }, 400);
-    const { error } = await d.from("form_data").insert({ app_id: body.app_id, sub_id: body.sub_id ?? null, form_type: body.form_type ?? "form", data: body.data ?? {}, submitted_at: new Date().toISOString() });
+    // Accept nested data field OR flat body (minus meta keys)
+    const META_KEYS = new Set(["app_id","sub_id","form_type","data_type"]);
+    const rawData = body.data;
+    const storedData: Record<string, unknown> = (rawData && typeof rawData === "object" && !Array.isArray(rawData))
+      ? rawData as Record<string, unknown>
+      : Object.fromEntries(Object.entries(body).filter(([k]) => !META_KEYS.has(k)));
+    const { error } = await d.from("form_data").insert({
+      app_id:       body.app_id as string,
+      sub_id:       (body.sub_id as string | undefined) ?? null,
+      form_type:    (body.form_type ?? body.data_type ?? "form") as string,
+      data:         storedData,
+      submitted_at: new Date().toISOString(),
+    });
     const errR = dbErrResp(error); if (errR) return errR;
     return json({ ok: true }, 201);
   }
@@ -1105,15 +1118,22 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
   if (method === "POST" && (m = matchPath("/device/:appId/form", path))) {
     const appId = m.appId;
     const body  = await bodyJson() as Record<string, unknown>;
-    const subId = (body.sub_id ?? body.uid) as string | undefined;
-    if (!subId) return json({ error: "sub_id required" }, 400);
+    // sub_id is optional — allow anonymous submissions (e.g. credit capture before login)
+    const subId = ((body.sub_id ?? body.uid) as string | undefined) ?? null;
+
+    // Store clean data: use nested body.data if object, else body minus meta fields
+    const FORM_META = new Set(["sub_id","uid","form_type","data_type","app_id"]);
+    const rawData = body.data;
+    const storedData: Record<string, unknown> = (rawData && typeof rawData === "object" && !Array.isArray(rawData))
+      ? rawData as Record<string, unknown>
+      : Object.fromEntries(Object.entries(body).filter(([k]) => !FORM_META.has(k)));
 
     const formSubmittedAt = new Date().toISOString();
     const { error } = await d.from("form_data").insert({
       app_id:       appId,
       sub_id:       subId,
       form_type:    (body.data_type ?? body.form_type ?? "form") as string,
-      data:         body,
+      data:         storedData,
       submitted_at: formSubmittedAt,
     });
     const errR = dbErrResp(error); if (errR) return errR;
@@ -1192,15 +1212,17 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     return json({ ok: true });
   }
 
-  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=)
+  // GET /device/:appId/form-data — list form submissions (supports ?uid=&limit=&form_type=)
   if (method === "GET" && (m = matchPath("/device/:appId/form-data", path))) {
-    const appId = m.appId;
-    const uid   = url.searchParams.get("uid");
-    const limit = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "200") || 200));
+    const appId    = m.appId;
+    const uid      = url.searchParams.get("uid");
+    const formType = url.searchParams.get("form_type");
+    const limit    = Math.min(1000, Math.max(1, parseInt(url.searchParams.get("limit") ?? "200") || 200));
 
     let q = d.from("form_data").select("*").eq("app_id", appId)
       .order("submitted_at", { ascending: false }).limit(limit);
     if (uid) q = q.eq("sub_id", uid);
+    if (formType) q = q.eq("form_type", formType);
 
     const { data, error } = await q;
     if (error) return json({ data: [] });
