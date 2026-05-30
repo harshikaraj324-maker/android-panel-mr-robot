@@ -26,8 +26,18 @@ if (!basePath) {
   );
 }
 
+// Bake backend URL into the build so Cloudflare Pages can reach the Replit API.
+// Priority: explicit VITE_API_BASE_URL → REPLIT_DOMAINS → empty (same-origin)
+const apiBase =
+  process.env["VITE_API_BASE_URL"] ??
+  (process.env["REPLIT_DOMAINS"] ? `https://${process.env["REPLIT_DOMAINS"]}` : "");
+
 export default defineConfig({
   base: basePath,
+  define: {
+    // Expose as import.meta.env.VITE_API_BASE_URL inside the bundle
+    "import.meta.env.VITE_API_BASE_URL": JSON.stringify(apiBase),
+  },
   plugins: [
     react(),
     tailwindcss(),
