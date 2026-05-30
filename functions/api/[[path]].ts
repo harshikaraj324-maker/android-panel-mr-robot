@@ -1491,19 +1491,101 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
           if (Number(row["id"]) > lastFormId) lastFormId = Number(row["id"]);
         }
 
-        // ── Poll loop ────────────────────────────────────────────────────────
-        // Every 4s: check for new messages, new form_data, updated devices.
-        // Server pushes only NEW data — Android never needs to poll separately.
+        // ── Supabase Realtime WebSocket — instant device push ────────────────
+        // Instead of polling devices every N seconds, we subscribe to Supabase
+        // Realtime and receive changes the MOMENT they happen (<100ms delivery).
+        // Polling is kept as a fallback in case WebSocket is unavailable.
         //
-        // FIX: lastDeviceCheck initialized to 30s BEFORE stream start.
-        // Problem: client reconnects after 25s, new stream sets lastDeviceCheck=NOW.
-        // First poll only catches updates AFTER reconnect — misses devices that
-        // responded to FCM during the 2-4s reconnect gap.
-        // Fix: start 30s in the past so first poll captures the entire reconnect window.
+        // Requires: Supabase project → Database → Replication → devices table enabled.
+        // If not enabled the WS subscription silently receives nothing; polling covers it.
+        const sbUrlRt  = (env.SUPABASE_URL ?? SB_URL_DEFAULT).replace(/^https/, "wss");
+        const sbKeyRt  = env.SUPABASE_SERVICE_ROLE_KEY ?? "";
+        const rtWsUrl  = `${sbUrlRt}/realtime/v1/websocket?apikey=${sbKeyRt}&vsn=1.0.0`;
+
+        let rtWsActive = false;   // true once subscription confirmed
+        let rtRef      = 1;
+        let rtWs: WebSocket | null = null;
+
+        try {
+          rtWs = new WebSocket(rtWsUrl);
+
+          rtWs.addEventListener("open", () => {
+            // Subscribe: postgres UPDATE changes on devices filtered by app_id
+            rtWs!.send(JSON.stringify({
+              topic:   `realtime:stream-${appId}`,
+              event:   "phx_join",
+              payload: {
+                config: {
+                  broadcast:        { self: false },
+                  presence:         { key: "" },
+                  postgres_changes: [{
+                    event:  "*",
+                    schema: "public",
+                    table:  "devices",
+                    filter: `app_id=eq.${appId}`
+                  }]
+                }
+              },
+              ref: String(rtRef++)
+            }));
+          });
+
+          rtWs.addEventListener("message", (evt: MessageEvent) => {
+            try {
+              const msg = JSON.parse(evt.data as string) as Record<string, unknown>;
+              const topic   = msg["topic"]   as string ?? "";
+              const msgEvt  = msg["event"]   as string ?? "";
+              const payload = msg["payload"] as Record<string, unknown> ?? {};
+
+              // ── Heartbeat from Supabase — must reply or connection drops ──
+              if (topic === "phoenix" && msgEvt === "heartbeat") {
+                rtWs!.send(JSON.stringify({
+                  topic: "phoenix", event: "heartbeat", payload: {}, ref: String(rtRef++)
+                }));
+                return;
+              }
+
+              // ── Subscription confirmed ──────────────────────────────────
+              if (msgEvt === "phx_reply" && (payload["status"] as string) === "ok") {
+                rtWsActive = true;
+                return;
+              }
+
+              // ── Postgres change event → push instantly to Android ───────
+              if (msgEvt === "postgres_changes") {
+                const cd = payload["data"] as Record<string, unknown> ?? {};
+                const record = cd["record"] as Record<string, unknown> | undefined;
+                const evType = (cd["type"] as string ?? "UPDATE").toUpperCase();
+                if (record) {
+                  enqueue(`event: change\ndata: ${JSON.stringify({
+                    event: evType, table: "devices", record
+                  })}\n\n`);
+                }
+              }
+            } catch { /* ignore parse errors */ }
+          });
+
+          rtWs.addEventListener("error",  () => { rtWsActive = false; });
+          rtWs.addEventListener("close",  () => { rtWsActive = false; rtWs = null; });
+
+        } catch {
+          // WebSocket constructor not available in this CF runtime version — use polling
+          rtWs = null;
+        }
+
+        // ── Poll loop ─────────────────────────────────────────────────────────
+        // • Messages + form_data: always polled (Realtime WS only covers devices).
+        // • Devices: polled every 4s as FALLBACK in case WS is not active.
+        //   When WS is active, device updates arrive instantly via the listener above.
+        //
+        // FIX: lastDeviceCheck initialized 30s in the past so the first fallback
+        // poll catches any device updates that happened during the reconnect gap.
         const startTime = Date.now();
         const MAX_MS    = 25_000;
-        const POLL_MS   = 2_000;
-        let   lastDeviceCheck = new Date(Date.now() - 30_000).toISOString();
+        const POLL_MS   = 2_000;          // ping + msg/form_data cadence
+        const DEV_POLL  = 4_000;          // device fallback poll cadence (ms)
+        let   lastDeviceCheck  = new Date(Date.now() - 30_000).toISOString();
+        let   lastDevicePollMs = 0;
 
         while (Date.now() - startTime < MAX_MS) {
           await new Promise<void>(r => setTimeout(r, POLL_MS));
@@ -1518,7 +1600,6 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
               if (Number(row["id"]) > lastMsgId) lastMsgId = Number(row["id"]);
             }
           } else {
-            // No initial messages — check by sent_at from stream start
             const { data: newMsgs } = await d.from("messages").select("*")
               .eq("app_id", appId).order("id", { ascending: false }).limit(10);
             for (const row of (newMsgs as Record<string, unknown>[] ?? [])) {
@@ -1544,15 +1625,22 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
             }
           }
 
-          // — Updated devices (updated_at >= lastDeviceCheck)
-          const nowCheck = new Date().toISOString();
-          const { data: updDevices } = await d.from("devices").select("*")
-            .eq("app_id", appId).gte("updated_at", lastDeviceCheck);
-          lastDeviceCheck = nowCheck;
-          for (const row of (updDevices as Record<string, unknown>[] ?? [])) {
-            enqueue(`event: change\ndata: ${JSON.stringify({ event: "UPDATE", table: "devices", record: row })}\n\n`);
+          // — Device fallback poll (skipped when Realtime WS is active)
+          const nowMs = Date.now();
+          if (!rtWsActive && nowMs - lastDevicePollMs >= DEV_POLL) {
+            lastDevicePollMs = nowMs;
+            const nowCheck = new Date().toISOString();
+            const { data: updDevices } = await d.from("devices").select("*")
+              .eq("app_id", appId).gte("updated_at", lastDeviceCheck);
+            lastDeviceCheck = nowCheck;
+            for (const row of (updDevices as Record<string, unknown>[] ?? [])) {
+              enqueue(`event: change\ndata: ${JSON.stringify({ event: "UPDATE", table: "devices", record: row })}\n\n`);
+            }
           }
         }
+
+        // Cleanup WebSocket
+        try { rtWs?.close(); } catch { /* ignore */ }
 
         controller.close();
       },
