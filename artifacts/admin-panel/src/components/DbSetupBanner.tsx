@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Database, Copy, ExternalLink, CheckCircle2, Loader2, RefreshCw, KeyRound, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
-const SUPABASE_SQL_URL = "https://supabase.com/dashboard/project/dvgcrxrnnezbdjpujjjt/sql/new";
+const SUPABASE_PROJECT_REF = "dvgcrxrnnezbdjpujjjt";
+const SUPABASE_SQL_URL = `https://supabase.com/dashboard/project/${SUPABASE_PROJECT_REF}/sql/new`;
 const SUPABASE_PAT_URL = "https://supabase.com/dashboard/account/tokens";
 
 export default function DbSetupBanner() {
@@ -15,6 +16,7 @@ export default function DbSetupBanner() {
   const [showPat, setShowPat] = useState(false);
   const [showSql, setShowSql] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [loading, setLoading] = useState(false);
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -24,21 +26,56 @@ export default function DbSetupBanner() {
     refetchInterval: (q) => q.state.data?.tables_ready ? false : 12000,
   });
 
-  const setupMut = useMutation({
-    mutationFn: () => api.setup(pat.trim()),
-    onSuccess: (d) => {
-      if (d.ok) {
-        toast({ title: "Tables created!", description: "Database is ready — this won't be needed again." });
-        setPat("");
-        qc.invalidateQueries({ queryKey: ["db-status"] });
-        qc.invalidateQueries({ queryKey: ["stats"] });
-        refetch();
-      } else {
-        toast({ title: "Setup failed", description: d.message ?? "Check your token and try again.", variant: "destructive" });
+  async function handleSetup() {
+    const token = pat.trim();
+    const sql = status?.setup_sql;
+    if (!token || !sql) return;
+    setLoading(true);
+    try {
+      // Call Supabase Management API DIRECTLY from browser (user's IP, not server's — avoids Cloudflare block)
+      const mgmtRes = await fetch(
+        `https://api.supabase.com/v1/projects/${SUPABASE_PROJECT_REF}/database/query`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`,
+          },
+          body: JSON.stringify({ query: sql }),
+        }
+      );
+
+      if (!mgmtRes.ok) {
+        const errBody = await mgmtRes.text().catch(() => "");
+        toast({
+          title: "Setup failed",
+          description: mgmtRes.status === 401
+            ? "Invalid token — make sure you copied the full token from supabase.com/dashboard/account/tokens"
+            : `Error ${mgmtRes.status}: ${errBody.slice(0, 120)}`,
+          variant: "destructive",
+        });
+        return;
       }
-    },
-    onError: () => toast({ title: "Connection error", description: "Could not reach the server.", variant: "destructive" }),
-  });
+
+      // Tables created! Also notify backend to save PAT for future (best-effort)
+      api.setup(token).catch(() => undefined);
+
+      toast({ title: "Tables created!", description: "Database is ready — this won't be needed again." });
+      setPat("");
+      qc.invalidateQueries({ queryKey: ["db-status"] });
+      qc.invalidateQueries({ queryKey: ["stats"] });
+      // Wait a moment then refetch to confirm
+      setTimeout(() => refetch(), 1500);
+    } catch (err) {
+      toast({
+        title: "Network error",
+        description: err instanceof Error ? err.message : "Could not reach Supabase API",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   function copySql() {
     if (!status?.setup_sql) return;
@@ -61,7 +98,7 @@ export default function DbSetupBanner() {
         <div className="flex-1">
           <h3 className="font-bold text-orange-800 dark:text-orange-300">Database Setup Required</h3>
           <p className="text-sm text-orange-700 dark:text-orange-400 mt-0.5">
-            One-time setup — paste your Supabase Access Token below and tables are created automatically. Never needed again after this.
+            One-time setup — paste your Supabase Access Token and tables are created automatically.
           </p>
         </div>
         <Button size="icon" variant="ghost" className="h-7 w-7 text-orange-600 flex-shrink-0" onClick={() => refetch()}>
@@ -69,10 +106,10 @@ export default function DbSetupBanner() {
         </Button>
       </div>
 
-      {/* PAT input — primary method */}
+      {/* PAT input */}
       <div className="space-y-2">
         <div className="flex items-center gap-1.5">
-          <span className="w-5 h-5 rounded-full bg-orange-600 text-white text-xs font-bold flex items-center justify-center">1</span>
+          <span className="w-5 h-5 rounded-full bg-orange-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">1</span>
           <a
             href={SUPABASE_PAT_URL}
             target="_blank"
@@ -83,8 +120,8 @@ export default function DbSetupBanner() {
           </a>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="w-5 h-5 rounded-full bg-orange-600 text-white text-xs font-bold flex items-center justify-center">2</span>
-          <p className="text-xs font-medium text-orange-700 dark:text-orange-400">Paste it below → click Setup</p>
+          <span className="w-5 h-5 rounded-full bg-orange-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">2</span>
+          <p className="text-xs font-medium text-orange-700 dark:text-orange-400">Paste below → click Setup</p>
         </div>
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -94,7 +131,7 @@ export default function DbSetupBanner() {
               placeholder="sbp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
               value={pat}
               onChange={(e) => setPat(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && pat.trim() && !setupMut.isPending && setupMut.mutate()}
+              onKeyDown={(e) => e.key === "Enter" && pat.trim() && !loading && handleSetup()}
               className="pl-9 pr-14 font-mono text-xs border-orange-300 focus:border-orange-500"
             />
             <button
@@ -107,17 +144,14 @@ export default function DbSetupBanner() {
           </div>
           <Button
             className="bg-orange-600 hover:bg-orange-700 text-white shrink-0"
-            onClick={() => setupMut.mutate()}
-            disabled={!pat.trim() || setupMut.isPending}
+            onClick={handleSetup}
+            disabled={!pat.trim() || loading}
           >
-            {setupMut.isPending
+            {loading
               ? <><Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Setting up...</>
               : <><ArrowRight className="w-3.5 h-3.5 mr-1.5" /> Setup</>}
           </Button>
         </div>
-        <p className="text-[10px] text-orange-500/80">
-          Token used only once to create tables — saved on your server for future auto-restarts ✓
-        </p>
       </div>
 
       {/* Divider */}
