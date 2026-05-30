@@ -158,6 +158,20 @@ router.get("/admin/init-status", requireAuth, async (_req, res) => {
   res.json({ tables_exist: !error });
 });
 
+// Bootstrap endpoint — returns tables status + saved PAT so browser can auto-setup
+// PAT is only exposed to authenticated admins over HTTPS. Browser uses it to call
+// Supabase Management API directly (bypasses Replit IP block on api.supabase.com).
+router.get("/admin/bootstrap", requireAuth, async (_req, res) => {
+  const { loadPat } = await import("../lib/supabase.js");
+  const { error } = await db.from("apps").select("id").limit(1);
+  const pat = loadPat();
+  res.json({
+    tables_ready: !error,
+    setup_sql: !error ? null : SETUP_SQL,
+    pat: pat || null,
+  });
+});
+
 // Setup tables via Supabase Management API (accepts PAT from DbSetup page or banner)
 router.post("/admin/setup", requireAuth, async (req, res) => {
   const { pat } = req.body as { pat?: string };
