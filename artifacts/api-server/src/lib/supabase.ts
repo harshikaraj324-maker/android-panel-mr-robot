@@ -213,7 +213,7 @@ export function savePat(pat: string): void {
   } catch {}
 }
 
-function loadPat(): string {
+export function loadPat(): string {
   try {
     if (fs.existsSync(PAT_FILE)) return fs.readFileSync(PAT_FILE, "utf8").trim();
   } catch {}
