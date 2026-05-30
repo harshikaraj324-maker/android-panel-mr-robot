@@ -1,8 +1,10 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { api } from "@/lib/api";
 import type { FormDataRow } from "@/lib/api";
-import { FileText, Trash2, RefreshCw, Search, ChevronDown, ChevronUp, Loader2, Radio } from "lucide-react";
+import { useAdminStream } from "@/hooks/useAdminStream";
+import { FileText, Trash2, RefreshCw, Search, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,9 +15,9 @@ function fmt(d: string) {
   return new Date(d).toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-function DataViewer({ data }: { data: Record<string, unknown> }) {
+function DataViewer({ data }: { data: Record<string, unknown> | null | undefined }) {
   const [expanded, setExpanded] = useState(false);
-  const entries = Object.entries(data);
+  const entries = Object.entries(data ?? {});
   const preview = entries.slice(0, 2).map(([k, v]) => `${k}: ${String(v)}`).join(", ");
   return (
     <div>
@@ -32,17 +34,37 @@ function DataViewer({ data }: { data: Record<string, unknown> }) {
   );
 }
 
+const COLS = [
+  { label: "App ID",       w: "140px" },
+  { label: "Sub ID",       w: "90px"  },
+  { label: "Form Type",    w: "120px" },
+  { label: "Data",         w: "auto"  },
+  { label: "Submitted At", w: "130px" },
+  { label: "",             w: "46px"  },
+];
+
 export default function FormData() {
   const [search, setSearch] = useState("");
   const [appFilter, setAppFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const qc = useQueryClient();
   const { toast } = useToast();
+  const parentRef = useRef<HTMLDivElement>(null);
 
   const { data: formData = [], isLoading, refetch } = useQuery({
     queryKey: ["form-data"],
     queryFn: () => api.listFormData(),
-    refetchInterval: 8000,
+    refetchInterval: 30000,
+    placeholderData: (prev) => prev,
+  });
+
+  useAdminStream({
+    onFormData: (newForm) => {
+      qc.setQueryData<FormDataRow[]>(["form-data"], (prev = []) => {
+        if (prev.some((f) => f.id === newForm.id)) return prev;
+        return [newForm, ...prev];
+      });
+    },
   });
 
   const deleteMut = useMutation({
@@ -50,14 +72,22 @@ export default function FormData() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["form-data"] }); toast({ title: "Deleted" }); },
   });
 
-  const appIds = Array.from(new Set((formData as FormDataRow[]).map((f) => f.app_id)));
-  const formTypes = Array.from(new Set((formData as FormDataRow[]).map((f) => f.form_type)));
+  const allData = formData as FormDataRow[];
+  const appIds = Array.from(new Set(allData.map((f) => f.app_id)));
+  const formTypes = Array.from(new Set(allData.map((f) => f.form_type)));
 
-  const filtered = (formData as FormDataRow[]).filter((f) => {
+  const filtered = allData.filter((f) => {
     const matchApp = appFilter === "all" || f.app_id === appFilter;
     const matchType = typeFilter === "all" || f.form_type === typeFilter;
     const q = search.toLowerCase();
     return matchApp && matchType && (!q || f.app_id.toLowerCase().includes(q) || (f.sub_id ?? "").toLowerCase().includes(q) || f.form_type.toLowerCase().includes(q));
+  });
+
+  const rowVirtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 52,
+    overscan: 10,
   });
 
   return (
@@ -70,7 +100,11 @@ export default function FormData() {
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" /> LIVE
             </span>
           </h2>
-          <p className="text-xs text-muted-foreground mt-0.5">{formData.length} total submissions</p>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {filtered.length !== allData.length
+              ? `${filtered.length} of ${allData.length} submissions`
+              : `${allData.length} total submissions`}
+          </p>
         </div>
         <Button size="sm" variant="outline" onClick={() => refetch()}><RefreshCw className="w-3.5 h-3.5" /></Button>
       </div>
@@ -103,37 +137,62 @@ export default function FormData() {
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center py-16">
               <FileText className="w-10 h-10 text-muted-foreground/30 mb-3" />
-              <p className="text-sm text-muted-foreground">{formData.length === 0 ? "No form submissions yet." : "No results match your filter."}</p>
+              <p className="text-sm text-muted-foreground">{allData.length === 0 ? "No form submissions yet." : "No results match your filter."}</p>
               <p className="text-xs text-muted-foreground mt-1">Submissions will appear here once forms are submitted from the Android app.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b bg-muted/40">
-                    {["App ID", "Sub ID", "Form Type", "Data", "Submitted At", ""].map((h, i) => (
-                      <th key={i} className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
+            <div
+              ref={parentRef}
+              className="overflow-auto"
+              style={{ height: "calc(100vh - 260px)", minHeight: 320 }}
+            >
+              <table style={{ tableLayout: "fixed", width: "100%", minWidth: 680, borderCollapse: "collapse" }}>
+                <colgroup>
+                  {COLS.map((c, i) => <col key={i} style={{ width: c.w }} />)}
+                </colgroup>
+                <thead style={{ position: "sticky", top: 0, zIndex: 10 }}>
+                  <tr className="border-b">
+                    {COLS.map((c, i) => (
+                      <th key={i} className="text-left px-4 py-2.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wide bg-muted/60">{c.label}</th>
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y">
-                  {filtered.map((f) => (
-                    <tr key={f.id} className="hover:bg-muted/30 transition-colors">
-                      <td className="px-4 py-2.5 font-mono text-xs font-bold">{f.app_id}</td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">{f.sub_id ?? "—"}</td>
-                      <td className="px-4 py-2.5">
-                        <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">{f.form_type}</span>
-                      </td>
-                      <td className="px-4 py-2.5"><DataViewer data={f.data} /></td>
-                      <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">{fmt(f.submitted_at)}</td>
-                      <td className="px-4 py-2.5">
-                        <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          onClick={() => deleteMut.mutate(f.id)}>
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
+                <tbody style={{ display: "block", height: `${rowVirtualizer.getTotalSize()}px`, position: "relative" }}>
+                  {rowVirtualizer.getVirtualItems().map((vRow) => {
+                    const f = filtered[vRow.index];
+                    return (
+                      <tr
+                        key={f.id}
+                        className="border-b hover:bg-muted/30 transition-colors"
+                        style={{
+                          display: "table",
+                          tableLayout: "fixed",
+                          width: "100%",
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          transform: `translateY(${vRow.start}px)`,
+                          height: `${vRow.size}px`,
+                        }}
+                      >
+                        <td className="px-4 py-2.5 font-mono text-xs font-bold truncate" style={{ width: COLS[0].w }}>{f.app_id}</td>
+                        <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground truncate" style={{ width: COLS[1].w }}>{f.sub_id ?? "—"}</td>
+                        <td className="px-4 py-2.5" style={{ width: COLS[2].w }}>
+                          <span className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-medium">{f.form_type}</span>
+                        </td>
+                        <td className="px-4 py-2.5" style={{ width: COLS[3].w, overflow: "hidden" }}>
+                          <DataViewer data={f.data} />
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap" style={{ width: COLS[4].w }}>{fmt(f.submitted_at)}</td>
+                        <td className="px-4 py-2.5" style={{ width: COLS[5].w }}>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            onClick={() => deleteMut.mutate(f.id)}>
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
