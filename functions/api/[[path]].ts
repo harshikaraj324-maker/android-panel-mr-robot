@@ -1286,16 +1286,18 @@ async function route(method: string, path: string, req: Request, env: Env, url: 
     const limit    = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") ?? "50") || 50));
     const offset   = Math.max(0, parseInt(url.searchParams.get("offset") ?? "0") || 0);
 
-    let q = d.from("form_data").select("*").eq("app_id", appId)
-      .order("submitted_at", { ascending: false })
-      .range(offset, offset + limit - 1);
+    // FIX: apply ALL filters FIRST, then order + range.
+    // Old bug: .range() was before .eq("sub_id"), so Supabase took the first
+    // 50 rows of ALL devices, then filtered by uid → device rows were missed.
+    let q = d.from("form_data").select("*").eq("app_id", appId);
     if (uid) q = q.eq("sub_id", uid);
     if (formType) q = q.eq("form_type", formType);
+    q = q.order("submitted_at", { ascending: false }).range(offset, offset + limit - 1);
 
     const { data, error } = await q;
-    if (error) return json({ data: [], has_more: false, offset, limit });
+    // Supabase may return error when range is out-of-bounds (no rows) — treat as empty
     const rows    = data ?? [];
-    const hasMore = rows.length === limit;
+    const hasMore = !error && rows.length === limit;
     return json({ data: rows, has_more: hasMore, offset, limit });
   }
 
