@@ -2,57 +2,41 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
-import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 
+// PORT / BASE_PATH are injected by Replit workflows — optional on Cloudflare Pages
 const rawPort = process.env.PORT;
+const port = rawPort ? Number(rawPort) : 5173;
+const basePath = process.env.BASE_PATH ?? "/";
 
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
-
-const port = Number(rawPort);
-
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
-
-const basePath = process.env.BASE_PATH;
-
-if (!basePath) {
-  throw new Error(
-    "BASE_PATH environment variable is required but was not provided.",
-  );
-}
-
-// Bake backend URL into the build so Cloudflare Pages can reach the Replit API.
-// Priority: explicit VITE_API_BASE_URL → REPLIT_DOMAINS → empty (same-origin)
+// API base URL:
+//   - Cloudflare Pages: REPLIT_DOMAINS is absent → empty string → relative /api (CF Function on same domain)
+//   - Replit dev/deploy: REPLIT_DOMAINS is set → absolute URL → reaches the Express API server
 const apiBase =
   process.env["VITE_API_BASE_URL"] ??
   (process.env["REPLIT_DOMAINS"] ? `https://${process.env["REPLIT_DOMAINS"]}` : "");
 
-export default defineConfig({
+const isReplit = Boolean(process.env.REPL_ID);
+const isDev = process.env.NODE_ENV !== "production";
+
+export default defineConfig(async () => ({
   base: basePath,
   define: {
-    // Expose as import.meta.env.VITE_API_BASE_URL inside the bundle
     "import.meta.env.VITE_API_BASE_URL": JSON.stringify(apiBase),
   },
   plugins: [
     react(),
     tailwindcss(),
-    runtimeErrorOverlay(),
-    ...(process.env.NODE_ENV !== "production" &&
-    process.env.REPL_ID !== undefined
+    ...(isReplit
       ? [
-          await import("@replit/vite-plugin-cartographer").then((m) =>
-            m.cartographer({
-              root: path.resolve(import.meta.dirname, ".."),
-            }),
-          ),
-          await import("@replit/vite-plugin-dev-banner").then((m) =>
-            m.devBanner(),
-          ),
+          (await import("@replit/vite-plugin-runtime-error-modal")).default(),
+          ...(isDev
+            ? [
+                (await import("@replit/vite-plugin-cartographer")).cartographer({
+                  root: path.resolve(import.meta.dirname, ".."),
+                }),
+                (await import("@replit/vite-plugin-dev-banner")).devBanner(),
+              ]
+            : []),
         ]
       : []),
   ],
@@ -70,7 +54,7 @@ export default defineConfig({
   },
   server: {
     port,
-    strictPort: true,
+    strictPort: !!rawPort,
     host: "0.0.0.0",
     allowedHosts: true,
     fs: {
@@ -82,4 +66,4 @@ export default defineConfig({
     host: "0.0.0.0",
     allowedHosts: true,
   },
-});
+}));
